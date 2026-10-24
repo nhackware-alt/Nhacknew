@@ -474,7 +474,7 @@ local Engine = {
         nitroCooldownTime = 2,
         nitroRechargeTime = 20,
     },
-    Speed = 60,
+    Speed = 120,
     _hrp = nil, _eng = nil, _lv = nil, _att = nil,
     _conn = nil, _charConn = nil,
 }
@@ -534,7 +534,7 @@ local function bindEngine()
     lv.Name = "NitroVelocity"
     lv.Attachment0 = att
     lv.RelativeTo = Enum.ActuatorRelativeTo.World
-    lv.MaxForce = math.huge
+    lv.MaxForce = Vector3.new(math.huge, 0, math.huge)
     lv.VectorVelocity = Vector3.new(0, 0, 0)
     lv.Parent = eng
     Engine._lv = lv
