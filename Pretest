@@ -17,6 +17,7 @@ local Tabs = {
     Rage     = Window:AddTab({ Title = "Rage",     Icon = "sword"    }),
     PvE      = Window:AddTab({ Title = "PvE",      Icon = "leaf"     }),
     Info     = Window:AddTab({ Title = "Info",     Icon = "info"     }),
+    Console  = Window:AddTab({ Title = "Console",  Icon = "terminal" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
@@ -32,6 +33,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
 local RunService        = game:GetService("RunService")
 local Debris            = game:GetService("Debris")
+local LogService        = game:GetService("LogService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerName  = LocalPlayer.Name
@@ -44,6 +46,30 @@ local _realPrint = print
 local function LOG(...)
     if not getgenv().GRG_SILENT then _realPrint("[GRG]", ...) end
 end
+
+-- ============================================================
+-- CONSOLE (F9 LOGS)
+-- ============================================================
+local consoleDesc = Tabs.Console:AddParagraph({ Title = "F9 Logs", Content = "" })
+local logHistory = {}
+
+LogService.MessageOut:Connect(function(message, messageType)
+    local prefix = "[INFO] "
+    if messageType == Enum.MessageType.MessageError then
+        prefix = "[ERROR] "
+    elseif messageType == Enum.MessageType.MessageWarning then
+        prefix = "[WARN] "
+    end
+    
+    table.insert(logHistory, prefix .. tostring(message))
+    if #logHistory > 40 then
+        table.remove(logHistory, 1)
+    end
+    
+    pcall(function()
+        consoleDesc:SetDesc(table.concat(logHistory, "\n"))
+    end)
+end)
 
 -- ============================================================
 -- ESP CORE
@@ -254,11 +280,11 @@ function ESP.pararPumpkin()
 end
 
 -- ============================================================
--- LEADER ESP
+-- LEADER ESP (ONLY LEADER)
 -- ============================================================
-local LEADER_ATTRS   = { "Role", "role", "Rank", "rank", "Title", "title", "Group", "group" }
-local LEADER_VALUES  = { "leader", "owner", "admin", "moderator", "mod", "staff", "gm" }
-local LEADER_TAGNAME = { "Leader", "leader", "Owner", "Admin", "Mod", "Staff", "GM" }
+local LEADER_ATTRS   = { "Role", "role", "Rank", "rank" }
+local LEADER_VALUES  = { "leader" }
+local LEADER_TAGNAME = { "Leader", "leader" }
 
 local function isLeader(plr)
     for _, attr in ipairs(LEADER_ATTRS) do
@@ -267,7 +293,7 @@ local function isLeader(plr)
             if v == true then return true end
             if typeof(v) == "string" then
                 local lv = v:lower()
-                for _, w in ipairs(LEADER_VALUES) do if lv:find(w, 1, true) then return true end end
+                for _, w in ipairs(LEADER_VALUES) do if lv == w then return true end end
             end
         end
     end
@@ -280,7 +306,7 @@ local function isLeader(plr)
         if roleStat then
             if roleStat:IsA("StringValue") then
                 local lv = roleStat.Value:lower()
-                for _, w in ipairs(LEADER_VALUES) do if lv:find(w, 1, true) then return true end end
+                for _, w in ipairs(LEADER_VALUES) do if lv == w then return true end end
             elseif roleStat:IsA("BoolValue") and roleStat.Value then
                 return true
             end
@@ -294,8 +320,6 @@ local function isLeader(plr)
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if hum and hum:GetAttribute("Leader") == true then return true end
     end
-    if plr.DisplayName and plr.DisplayName:lower():find("leader", 1, true) then return true end
-    if plr.Name and plr.Name:lower():find("leader", 1, true) then return true end
     return false
 end
 
@@ -413,6 +437,7 @@ end
 local Fly = {
     Enabled = false, Force = 300, Holding = false,
     Attachment = nil, VectorForce = nil, InputConn = nil, InputEndConn = nil, Heartbeat = nil,
+    MobileGui = nil
 }
 function Fly.GetRoot()
     local ch = LocalPlayer.Character
@@ -438,9 +463,39 @@ function Fly.EnsureForce()
     local mass = root.AssemblyMass
     Fly.VectorForce.Force = Fly.Holding and Vector3.new(0, Fly.Force * mass, 0) or Vector3.new(0, 0, 0)
 end
+function Fly.CreateMobileButton()
+    if Fly.MobileGui then return end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "FlyMobileGui"
+    gui.ResetOnSpawn = false
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 80, 0, 80)
+    btn.Position = UDim2.new(0, 20, 0.5, -40)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    btn.BackgroundTransparency = 0.3
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Text = "FLY"
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 20
+    btn.Parent = gui
+
+    btn.MouseButton1Down:Connect(function() Fly.Holding = true end)
+    btn.MouseButton1Up:Connect(function() Fly.Holding = false end)
+    btn.TouchTapIn:Connect(function() Fly.Holding = true end)
+    btn.TouchTapOut:Connect(function() Fly.Holding = false end)
+    btn.MouseLeave:Connect(function() Fly.Holding = false end)
+    
+    Fly.MobileGui = gui
+end
+function Fly.DestroyMobileButton()
+    if Fly.MobileGui then Fly.MobileGui:Destroy(); Fly.MobileGui = nil end
+end
 function Fly.Start()
     if Fly.Heartbeat then Fly.Heartbeat:Disconnect() end
     Fly.Enabled = true
+    
     Fly.InputConn = UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
         if input.KeyCode == Enum.KeyCode.Space then Fly.Holding = true end
@@ -448,6 +503,8 @@ function Fly.Start()
     Fly.InputEndConn = UserInputService.InputEnded:Connect(function(input)
         if input.KeyCode == Enum.KeyCode.Space then Fly.Holding = false end
     end)
+    
+    Fly.CreateMobileButton()
     Fly.Heartbeat = RunService.Heartbeat:Connect(function() pcall(Fly.EnsureForce) end)
 end
 function Fly.Stop()
@@ -456,6 +513,7 @@ function Fly.Stop()
     if Fly.InputConn then Fly.InputConn:Disconnect(); Fly.InputConn = nil end
     if Fly.InputEndConn then Fly.InputEndConn:Disconnect(); Fly.InputEndConn = nil end
     Fly.DestroyForce()
+    Fly.DestroyMobileButton()
 end
 function Fly.SetForce(v) Fly.Force = v end
 
@@ -474,7 +532,7 @@ local Engine = {
         nitroCooldownTime = 2,
         nitroRechargeTime = 20,
     },
-    Speed = 120,
+    Speed = 60,
     _hrp = nil, _eng = nil, _lv = nil, _att = nil,
     _conn = nil, _charConn = nil,
 }
@@ -534,7 +592,10 @@ local function bindEngine()
     lv.Name = "NitroVelocity"
     lv.Attachment0 = att
     lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    
+    -- ФИКС ГРАВИТАЦИИ: отключаем силу по Y
     lv.MaxForce = Vector3.new(math.huge, 0, math.huge)
+    
     lv.VectorVelocity = Vector3.new(0, 0, 0)
     lv.Parent = eng
     Engine._lv = lv
@@ -555,11 +616,8 @@ local function tickEngine(dt)
     local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
 
+    -- ФИКС СЛАЙДЕРА: берем скорость только из Engine.Speed, игнорируя атрибуты карта
     local maxSpeed = Engine.Speed
-    if Engine._eng then
-        local v = Engine._eng:GetAttribute("forwardMaxSpeed")
-        if typeof(v) == "number" and v > 0 then maxSpeed = v end
-    end
 
     local md = hum.MoveDirection
     local moving = md.Magnitude > 0.1
@@ -607,7 +665,14 @@ function Engine.Stop()
     Engine._hrp = nil
 end
 
-function Engine.SetSpeed(v)        v = tonumber(v); if v then Engine.Speed = v end end
+function Engine.SetSpeed(v)        
+    v = tonumber(v)
+    if v then 
+        Engine.Speed = v 
+        if Engine._eng then Engine._eng:SetAttribute("forwardMaxSpeed", v) end
+    end 
+end
+
 function Engine.SetCopyFromKart(v) Engine.CopyFromKart = v and true or false end
 
 -- ============================================================
@@ -1623,7 +1688,7 @@ Tabs.Rage:AddToggle("SpeedToggle", {
     end
 })
 Tabs.Rage:AddSlider("SpeedValue", {
-    Title = "Speed", Default = 60, Min = 20, Max = 200, Rounding = 1,
+    Title = "Speed", Default = 60, Min = 20, Max = 300, Rounding = 1,
     Callback = function(v) Engine.SetSpeed(v) end
 })
 Tabs.Rage:AddToggle("SpeedCopyKart", {
@@ -1632,7 +1697,7 @@ Tabs.Rage:AddToggle("SpeedCopyKart", {
 })
 
 Tabs.Rage:AddToggle("FlyToggle", {
-    Title = "Fly (hold Space)",
+    Title = "Fly (hold Space / Mobile Button)",
     Description = "VectorForce push up. WalkSpeed не трогается.",
     Default = false,
     Callback = function(s) if s then Fly.Start() else Fly.Stop() end end
