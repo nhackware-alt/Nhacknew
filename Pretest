@@ -283,19 +283,15 @@ end
 -- LEADER ESP
 -- ============================================================
 local function isLeader(plr)
-    -- Проверка через Team (так как в GRG роль = команда)
     if plr.Team and plr.Team.Name:lower() == "leader" then
         return true
     end
-    
-    -- Фолбэк на случай, если роль лежит в атрибутах
     local ok, role = pcall(function() 
         return plr:GetAttribute("Role") or plr:GetAttribute("role") 
     end)
     if ok and typeof(role) == "string" and role:lower() == "leader" then
         return true
     end
-    
     return false
 end
 
@@ -459,8 +455,6 @@ function Fly.CreateMobileButton()
 
     btn.MouseButton1Down:Connect(function() Fly.Holding = true end)
     btn.MouseButton1Up:Connect(function() Fly.Holding = false end)
-    btn.TouchTapIn:Connect(function() Fly.Holding = true end)
-    btn.TouchTapOut:Connect(function() Fly.Holding = false end)
     btn.MouseLeave:Connect(function() Fly.Holding = false end)
     
     Fly.MobileGui = gui
@@ -569,7 +563,7 @@ local function bindEngine()
     lv.Attachment0 = att
     lv.RelativeTo = Enum.ActuatorRelativeTo.World
     
-    lv.MaxForce = Vector3.new(math.huge, 0, math.huge)
+    lv.MaxForce = math.huge
     
     lv.VectorVelocity = Vector3.new(0, 0, 0)
     lv.Parent = eng
@@ -592,15 +586,20 @@ local function tickEngine(dt)
     if not hum or hum.Health <= 0 then return end
 
     local maxSpeed = Engine.Speed
+    local onGround = hum.FloorMaterial ~= Enum.Material.Air
+
+    if Engine._lv then
+        Engine._lv.Enabled = onGround
+    end
+
+    if not onGround then return end
 
     local md = hum.MoveDirection
     local moving = md.Magnitude > 0.1
-    local onGround = hum.FloorMaterial ~= Enum.Material.Air
-
     local vel = hrp.AssemblyLinearVelocity
     local horiz = Vector3.new(vel.X, 0, vel.Z).Magnitude
 
-    if moving and onGround and horiz < maxSpeed then
+    if moving and horiz < maxSpeed then
         local dir = Vector3.new(md.X, 0, md.Z)
         if dir.Magnitude > 0.01 then
             Engine._lv.VectorVelocity = dir.Unit * maxSpeed
@@ -1593,7 +1592,7 @@ local TpDropdown = Tabs.Rage:AddDropdown("TpTargetDropdown", {
     Title = "Loop TP Target",
     Values = getPlayerList(),
     Multi = false,
-    Default = 1,
+    Default = getPlayerList()[1],
     Callback = function(v) 
         if v ~= "(no players)" then 
             tpTargetPlayer = v 
@@ -1605,8 +1604,7 @@ local TpDropdown = Tabs.Rage:AddDropdown("TpTargetDropdown", {
 
 local function updateDropdown()
     local newList = getPlayerList()
-    TpDropdown:Refresh(newList, true)
-    TpDropdown:SetValue(newList[1])
+    TpDropdown.Values = newList
     if tpTargetPlayer and not table.find(newList, tpTargetPlayer) then
         tpTargetPlayer = nil
     end
@@ -1615,13 +1613,13 @@ end
 Players.PlayerAdded:Connect(function(player)
     if player ~= LocalPlayer then
         task.wait(1) 
-        updateDropdown()
+        pcall(updateDropdown)
     end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
     if player ~= LocalPlayer then
-        updateDropdown()
+        pcall(updateDropdown)
     end
 end)
 
