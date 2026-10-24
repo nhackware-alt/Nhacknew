@@ -1,0 +1,1831 @@
+local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/nhackware-alt/Nhacknew/refs/heads/main/NH_simple_mod_ui"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+local Window = Fluent:CreateWindow({
+    Title = "NhackWare v0.5",
+    SubTitle = "GRG",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = false,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.RightShift
+})
+
+local Tabs = {
+    Main     = Window:AddTab({ Title = "Main",     Icon = "home"     }),
+    Rage     = Window:AddTab({ Title = "Rage",     Icon = "sword"    }),
+    PvE      = Window:AddTab({ Title = "PvE",      Icon = "leaf"     }),
+    Info     = Window:AddTab({ Title = "Info",     Icon = "info"     }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+
+local Options = Fluent.Options
+getgenv().GRG_BOOT_T = getgenv().GRG_BOOT_T or tick()
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
+local Debris            = game:GetService("Debris")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerName  = LocalPlayer.Name
+
+-- ============================================================
+-- LOG
+-- ============================================================
+getgenv().GRG_SILENT = getgenv().GRG_SILENT or false
+local _realPrint = print
+local function LOG(...)
+    if not getgenv().GRG_SILENT then _realPrint("[GRG]", ...) end
+end
+
+-- ============================================================
+-- ESP CORE
+-- ============================================================
+local ESP = {
+    ogMoneyAtivo = false, treeEntitiesAtivo = false, pumpkinAtivo = false,
+    leaderAtivo = false,
+    ogMoneyLoop = nil, treeEntitiesLoop = nil, pumpkinLoop = nil, leaderLoop = nil,
+    _leaderCharConns = nil, _leaderPlayersConn = nil,
+    _ogMoneyCache = nil, _pumpkinCache = nil, _pumpkinKnown = nil,
+}
+
+function ESP.criarESP(objeto, texto, cor)
+    local existente = objeto:FindFirstChild("ESP_" .. texto)
+    if existente then
+        local lbl = existente:FindFirstChildOfClass("TextLabel")
+        if lbl then lbl.TextColor3 = cor end
+        return existente
+    end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_" .. texto
+    billboard.Adornee = objeto
+    billboard.Size = UDim2.new(0, 100, 0, 40)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 5000
+    local label = Instance.new("TextLabel")
+    label.Text = texto
+    label.BackgroundColor3 = Color3.new(0, 0, 0)
+    label.BackgroundTransparency = 0.4
+    label.TextColor3 = cor
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.Parent = billboard
+    billboard.Parent = objeto
+    return billboard
+end
+
+function ESP.limparESPs(pasta, tipo)
+    local function remover(p)
+        for _, item in ipairs(p:GetChildren()) do
+            local esp = item:FindFirstChild("ESP_" .. tipo)
+            if esp then esp:Destroy() end
+            if #item:GetChildren() > 0 then remover(item) end
+        end
+    end
+    if pasta then remover(pasta) end
+end
+
+function ESP.iniciarOGMoney()
+    if ESP.ogMoneyLoop then task.cancel(ESP.ogMoneyLoop) end
+    ESP._ogMoneyCache = ESP._ogMoneyCache or {}
+    local function atualizar()
+        local TV = Workspace:FindFirstChild("TreeVisuals")
+        if not TV then return end
+        local cache = ESP._ogMoneyCache
+        for obj, gui in pairs(cache) do
+            if not obj.Parent then
+                cache[obj] = nil
+            end
+        end
+        for _, item in ipairs(TV:GetDescendants()) do
+            if item.Name == "OG_Money" and not cache[item] then
+                local adornee = item.PrimaryPart or item:FindFirstChild("Middle") or item
+                cache[item] = ESP.criarESP(adornee, "💰 OG_Money", Color3.new(1, 1, 0))
+            end
+        end
+    end
+    ESP.ogMoneyLoop = task.spawn(function()
+        while ESP.ogMoneyAtivo do pcall(atualizar); task.wait(6) end
+    end)
+end
+
+function ESP.pararOGMoney()
+    ESP.ogMoneyAtivo = false
+    if ESP.ogMoneyLoop then task.cancel(ESP.ogMoneyLoop); ESP.ogMoneyLoop = nil end
+    if ESP._ogMoneyCache then
+        for obj, gui in pairs(ESP._ogMoneyCache) do
+            if gui then pcall(function() gui:Destroy() end) end
+        end
+        ESP._ogMoneyCache = {}
+    end
+end
+
+function ESP.iniciarTreeEntities()
+    if ESP.treeEntitiesLoop then task.cancel(ESP.treeEntitiesLoop) end
+    local function atualizar()
+        local TE = Workspace:FindFirstChild("TreeEntity")
+        if not TE then return end
+        ESP.limparESPs(TE, "👑 TreeLord")
+        ESP.limparESPs(TE, "🌿 TreeMinion")
+        local function procurar(p)
+            for _, item in ipairs(p:GetChildren()) do
+                if item.Name == "TreeLord" then
+                    ESP.criarESP(item, "👑 TreeLord", Color3.new(1, 0, 0))
+                elseif item.Name == "TreeMinion" then
+                    ESP.criarESP(item, "🌿 TreeMinion", Color3.new(0, 1, 0))
+                end
+                if #item:GetChildren() > 0 then procurar(item) end
+            end
+        end
+        procurar(TE)
+    end
+    ESP.treeEntitiesLoop = task.spawn(function()
+        while ESP.treeEntitiesAtivo do pcall(atualizar); task.wait(10) end
+    end)
+end
+
+function ESP.pararTreeEntities()
+    ESP.treeEntitiesAtivo = false
+    if ESP.treeEntitiesLoop then task.cancel(ESP.treeEntitiesLoop); ESP.treeEntitiesLoop = nil end
+    local TE = Workspace:FindFirstChild("TreeEntity")
+    if TE then
+        ESP.limparESPs(TE, "👑 TreeLord")
+        ESP.limparESPs(TE, "🌿 TreeMinion")
+    end
+end
+
+local PUMPKIN_MAX_RADIUS = 500
+local PUMPKIN_LIMIT = 30
+
+function ESP.iniciarPumpkin()
+    if ESP.pumpkinLoop then task.cancel(ESP.pumpkinLoop) end
+    ESP._pumpkinCache = ESP._pumpkinCache or {}
+    ESP._pumpkinKnown = ESP._pumpkinKnown or {}
+    local lastFullScan = 0
+
+    local function getPos(item)
+        if item:IsA("BasePart") then return item.Position end
+        if item:IsA("Model") then
+            local ok, pp = pcall(function() return item:GetPivot().Position end)
+            if ok then return pp end
+        end
+        return nil
+    end
+
+    local function fullScan()
+        table.clear(ESP._pumpkinKnown)
+        for _, item in ipairs(Workspace:GetDescendants()) do
+            if item.Name == "IS_FALL_1" then
+                ESP._pumpkinKnown[item] = true
+            end
+        end
+    end
+
+    local function atualizar()
+        local ch = LocalPlayer.Character
+        if not ch then return end
+        local hrp = ch:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local meuPos = hrp.Position
+
+        if tick() - lastFullScan > 20 then
+            fullScan()
+            lastFullScan = tick()
+        end
+
+        local cand = {}
+        for item in pairs(ESP._pumpkinKnown) do
+            if not item.Parent then
+                ESP._pumpkinKnown[item] = nil
+            else
+                local pos = getPos(item)
+                if pos then
+                    local d = (pos - meuPos).Magnitude
+                    if d <= PUMPKIN_MAX_RADIUS then
+                        table.insert(cand, { obj = item, dist = d })
+                    end
+                end
+            end
+        end
+        table.sort(cand, function(a, b) return a.dist < b.dist end)
+
+        local shouldShow = {}
+        for i = 1, math.min(#cand, PUMPKIN_LIMIT) do
+            shouldShow[cand[i].obj] = true
+        end
+
+        for obj, gui in pairs(ESP._pumpkinCache) do
+            if not shouldShow[obj] or not obj.Parent then
+                if gui then pcall(function() gui:Destroy() end) end
+                ESP._pumpkinCache[obj] = nil
+            end
+        end
+        for obj in pairs(shouldShow) do
+            if not ESP._pumpkinCache[obj] then
+                ESP._pumpkinCache[obj] = ESP.criarESP(obj, "🎃 Pumpkin", Color3.fromRGB(255, 140, 0))
+            end
+        end
+    end
+
+    ESP.pumpkinLoop = task.spawn(function()
+        while ESP.pumpkinAtivo do pcall(atualizar); task.wait(8) end
+    end)
+end
+
+function ESP.pararPumpkin()
+    ESP.pumpkinAtivo = false
+    if ESP.pumpkinLoop then task.cancel(ESP.pumpkinLoop); ESP.pumpkinLoop = nil end
+    if ESP._pumpkinCache then
+        for obj, gui in pairs(ESP._pumpkinCache) do
+            if gui then pcall(function() gui:Destroy() end) end
+        end
+        ESP._pumpkinCache = {}
+    end
+    ESP._pumpkinKnown = nil
+end
+
+-- ============================================================
+-- LEADER ESP
+-- ============================================================
+local LEADER_ATTRS   = { "Role", "role", "Rank", "rank", "Title", "title", "Group", "group" }
+local LEADER_VALUES  = { "leader", "owner", "admin", "moderator", "mod", "staff", "gm" }
+local LEADER_TAGNAME = { "Leader", "leader", "Owner", "Admin", "Mod", "Staff", "GM" }
+
+local function isLeader(plr)
+    for _, attr in ipairs(LEADER_ATTRS) do
+        local ok, v = pcall(function() return plr:GetAttribute(attr) end)
+        if ok and v ~= nil then
+            if v == true then return true end
+            if typeof(v) == "string" then
+                local lv = v:lower()
+                for _, w in ipairs(LEADER_VALUES) do if lv:find(w, 1, true) then return true end end
+            end
+        end
+    end
+    local ls = plr:FindFirstChild("leaderstats")
+    if ls then
+        for _, tag in ipairs(LEADER_TAGNAME) do
+            if ls:FindFirstChild(tag) then return true end
+        end
+        local roleStat = ls:FindFirstChild("Role") or ls:FindFirstChild("role")
+        if roleStat then
+            if roleStat:IsA("StringValue") then
+                local lv = roleStat.Value:lower()
+                for _, w in ipairs(LEADER_VALUES) do if lv:find(w, 1, true) then return true end end
+            elseif roleStat:IsA("BoolValue") and roleStat.Value then
+                return true
+            end
+        end
+    end
+    local ch = plr.Character
+    if ch then
+        for _, tag in ipairs(LEADER_TAGNAME) do
+            if ch:FindFirstChild(tag) then return true end
+        end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if hum and hum:GetAttribute("Leader") == true then return true end
+    end
+    if plr.DisplayName and plr.DisplayName:lower():find("leader", 1, true) then return true end
+    if plr.Name and plr.Name:lower():find("leader", 1, true) then return true end
+    return false
+end
+
+local function applyHighlight(plr)
+    local ch = plr.Character
+    if not ch then return end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if hrp:FindFirstChild("ESP_👑 LEADER") then return end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "ESP_👑 LEADER"
+    bb.Adornee = hrp
+    bb.Size = UDim2.new(0, 140, 0, 44)
+    bb.StudsOffset = Vector3.new(0, 4, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 5000
+    local lbl = Instance.new("TextLabel")
+    lbl.Text = "👑 " .. plr.DisplayName .. " [LEADER]"
+    lbl.BackgroundColor3 = Color3.fromRGB(255, 215, 0)
+    lbl.BackgroundTransparency = 0.25
+    lbl.TextColor3 = Color3.fromRGB(30, 20, 0)
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 14
+    lbl.Parent = bb
+    bb.Parent = hrp
+
+    local hl = Instance.new("Highlight")
+    hl.Name = "ESP_👑 LEADER_HL"
+    hl.Adornee = ch
+    hl.FillColor = Color3.fromRGB(255, 215, 0)
+    hl.OutlineColor = Color3.fromRGB(255, 255, 0)
+    hl.FillTransparency = 0.6
+    hl.OutlineTransparency = 0.1
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = ch
+
+    local light = Instance.new("PointLight")
+    light.Name = "ESP_👑 LEADER_LIGHT"
+    light.Color = Color3.fromRGB(255, 230, 120)
+    light.Range = 14
+    light.Brightness = 3
+    light.Parent = hrp
+end
+
+local function clearHighlight(plr)
+    local ch = plr.Character
+    if not ch then return end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local bb = hrp:FindFirstChild("ESP_👑 LEADER"); if bb then bb:Destroy() end
+        local light = hrp:FindFirstChild("ESP_👑 LEADER_LIGHT"); if light then light:Destroy() end
+    end
+    local hl = ch:FindFirstChild("ESP_👑 LEADER_HL"); if hl then hl:Destroy() end
+end
+
+function ESP.iniciarLeader()
+    if ESP.leaderLoop then task.cancel(ESP.leaderLoop) end
+    local function refresh()
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                if isLeader(plr) then applyHighlight(plr) else clearHighlight(plr) end
+            end
+        end
+    end
+    if ESP._leaderCharConns then
+        for _, c in ipairs(ESP._leaderCharConns) do pcall(function() c:Disconnect() end) end
+    end
+    ESP._leaderCharConns = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            table.insert(ESP._leaderCharConns, plr.CharacterAdded:Connect(function()
+                task.wait(0.5)
+                if ESP.leaderAtivo then
+                    if isLeader(plr) then applyHighlight(plr) else clearHighlight(plr) end
+                end
+            end))
+        end
+    end
+    ESP._leaderPlayersConn = Players.PlayerAdded:Connect(function(plr)
+        if plr ~= LocalPlayer then
+            table.insert(ESP._leaderCharConns, plr.CharacterAdded:Connect(function()
+                task.wait(0.5)
+                if ESP.leaderAtivo then
+                    if isLeader(plr) then applyHighlight(plr) else clearHighlight(plr) end
+                end
+            end))
+        end
+    end)
+    ESP.leaderLoop = task.spawn(function()
+        while ESP.leaderAtivo do pcall(refresh); task.wait(2) end
+    end)
+end
+
+function ESP.pararLeader()
+    ESP.leaderAtivo = false
+    if ESP.leaderLoop then task.cancel(ESP.leaderLoop); ESP.leaderLoop = nil end
+    if ESP._leaderCharConns then
+        for _, c in ipairs(ESP._leaderCharConns) do pcall(function() c:Disconnect() end) end
+        ESP._leaderCharConns = nil
+    end
+    if ESP._leaderPlayersConn then
+        pcall(function() ESP._leaderPlayersConn:Disconnect() end)
+        ESP._leaderPlayersConn = nil
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then clearHighlight(plr) end
+    end
+end
+
+-- ============================================================
+-- FLY
+-- ============================================================
+local Fly = {
+    Enabled = false, Force = 300, Holding = false,
+    Attachment = nil, VectorForce = nil, InputConn = nil, InputEndConn = nil, Heartbeat = nil,
+}
+function Fly.GetRoot()
+    local ch = LocalPlayer.Character
+    return ch and ch:FindFirstChild("HumanoidRootPart")
+end
+function Fly.DestroyForce()
+    if Fly.VectorForce then Fly.VectorForce:Destroy(); Fly.VectorForce = nil end
+    if Fly.Attachment then Fly.Attachment:Destroy(); Fly.Attachment = nil end
+end
+function Fly.EnsureForce()
+    if not Fly.Enabled then return end
+    local root = Fly.GetRoot()
+    if not root then Fly.DestroyForce(); return end
+    if Fly.Attachment and Fly.Attachment.Parent ~= root then Fly.DestroyForce() end
+    if not Fly.Attachment then
+        local att = Instance.new("Attachment"); att.Name = "FlyAtt"; att.Parent = root
+        local vf = Instance.new("VectorForce")
+        vf.Name = "FlyForce"; vf.Attachment0 = att
+        vf.RelativeTo = Enum.ActuatorRelativeTo.World
+        vf.ApplyAtCenterOfMass = true; vf.Force = Vector3.new(0, 0, 0); vf.Parent = root
+        Fly.Attachment = att; Fly.VectorForce = vf
+    end
+    local mass = root.AssemblyMass
+    Fly.VectorForce.Force = Fly.Holding and Vector3.new(0, Fly.Force * mass, 0) or Vector3.new(0, 0, 0)
+end
+function Fly.Start()
+    if Fly.Heartbeat then Fly.Heartbeat:Disconnect() end
+    Fly.Enabled = true
+    Fly.InputConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.Space then Fly.Holding = true end
+    end)
+    Fly.InputEndConn = UserInputService.InputEnded:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.Space then Fly.Holding = false end
+    end)
+    Fly.Heartbeat = RunService.Heartbeat:Connect(function() pcall(Fly.EnsureForce) end)
+end
+function Fly.Stop()
+    Fly.Enabled = false; Fly.Holding = false
+    if Fly.Heartbeat then Fly.Heartbeat:Disconnect(); Fly.Heartbeat = nil end
+    if Fly.InputConn then Fly.InputConn:Disconnect(); Fly.InputConn = nil end
+    if Fly.InputEndConn then Fly.InputEndConn:Disconnect(); Fly.InputEndConn = nil end
+    Fly.DestroyForce()
+end
+function Fly.SetForce(v) Fly.Force = v end
+
+-- ============================================================
+-- ENGINE
+-- ============================================================
+local Engine = {
+    Enabled = false,
+    CopyFromKart = true,
+    ManualAttrs = {
+        forwardMaxSpeed   = 60,
+        nitroForce        = 20,
+        nitroMaxSpeed     = 10,
+        nitroAcceleration = 30,
+        nitroTime         = 2,
+        nitroCooldownTime = 2,
+        nitroRechargeTime = 20,
+    },
+    Speed = 60,
+    _hrp = nil, _eng = nil, _lv = nil, _att = nil,
+    _conn = nil, _charConn = nil,
+}
+
+local function findMyKart()
+    local karts = Workspace:FindFirstChild("Karts")
+    return karts and karts:FindFirstChild(PlayerName)
+end
+
+local function copyKartAttrs(eng)
+    if not Engine.CopyFromKart then
+        for k, v in pairs(Engine.ManualAttrs) do eng:SetAttribute(k, v) end
+        return
+    end
+    local kart = findMyKart()
+    local src = kart and kart:FindFirstChild("Engine")
+    if not src then
+        for k, v in pairs(Engine.ManualAttrs) do eng:SetAttribute(k, v) end
+        return
+    end
+    for k, v in pairs(src:GetAttributes()) do
+        if k == "_isAccelerating" or k == "_isBraking" or k == "_isHandBraking"
+        or k == "_isReversing" or k == "_isStopped" or k == "_doingBurnout" then
+            eng:SetAttribute(k, false)
+        elseif k == "_nitroEnabled" then
+            eng:SetAttribute(k, true)
+        else
+            pcall(function() eng:SetAttribute(k, v) end)
+        end
+    end
+    eng:SetAttribute("_isAccelerating", true)
+    eng:SetAttribute("_nitroEnabled", true)
+end
+
+local function destroyEngine()
+    if Engine._lv  then pcall(function() Engine._lv:Destroy()  end); Engine._lv  = nil end
+    if Engine._att then pcall(function() Engine._att:Destroy() end); Engine._att = nil end
+    if Engine._eng then pcall(function() Engine._eng:Destroy() end); Engine._eng = nil end
+end
+
+local function bindEngine()
+    destroyEngine()
+    local ch = LocalPlayer.Character
+    if not ch then return end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    Engine._hrp = hrp
+
+    local eng = Instance.new("Folder"); eng.Name = "Engine"; eng.Parent = hrp
+    copyKartAttrs(eng)
+
+    local att = Instance.new("Attachment")
+    att.Name = "EngineAttach"; att.Position = Vector3.new(0, 0, 0); att.Parent = hrp
+    Engine._att = att
+
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "NitroVelocity"
+    lv.Attachment0 = att
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.MaxForce = math.huge
+    lv.VectorVelocity = Vector3.new(0, 0, 0)
+    lv.Parent = eng
+    Engine._lv = lv
+
+    for _, n in ipairs({ "WheelFLMotor", "WheelFRMotor", "WheelRLMotor", "WheelRRMotor" }) do
+        local cc = Instance.new("CylindricalConstraint")
+        cc.Name = n; cc.Visible = false; cc.Enabled = false; cc.Parent = eng
+    end
+    Engine._eng = eng
+end
+
+local function tickEngine(dt)
+    if not Engine.Enabled then return end
+    local hrp = Engine._hrp
+    if not hrp or not hrp.Parent then bindEngine(); return end
+    if not Engine._lv then bindEngine(); return end
+
+    local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+
+    local maxSpeed = Engine.Speed
+    if Engine._eng then
+        local v = Engine._eng:GetAttribute("forwardMaxSpeed")
+        if typeof(v) == "number" and v > 0 then maxSpeed = v end
+    end
+
+    local md = hum.MoveDirection
+    local moving = md.Magnitude > 0.1
+    local onGround = hum.FloorMaterial ~= Enum.Material.Air
+
+    local vel = hrp.AssemblyLinearVelocity
+    local horiz = Vector3.new(vel.X, 0, vel.Z).Magnitude
+
+    if moving and onGround and horiz < maxSpeed then
+        local dir = Vector3.new(md.X, 0, md.Z)
+        if dir.Magnitude > 0.01 then
+            Engine._lv.VectorVelocity = dir.Unit * maxSpeed
+            if Engine._eng then
+                Engine._eng:SetAttribute("_isAccelerating", true)
+                Engine._eng:SetAttribute("_nitroEnabled", true)
+                Engine._eng:SetAttribute("_speed", horiz)
+                Engine._eng:SetAttribute("_chassisSpeed", horiz)
+            end
+        end
+    else
+        Engine._lv.VectorVelocity = Vector3.new(0, 0, 0)
+        if Engine._eng then
+            Engine._eng:SetAttribute("_isAccelerating", false)
+            Engine._eng:SetAttribute("_speed", horiz)
+            Engine._eng:SetAttribute("_chassisSpeed", horiz)
+        end
+    end
+end
+
+function Engine.Start()
+    if Engine.Enabled then return end
+    Engine.Enabled = true
+    bindEngine()
+    Engine._charConn = LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(0.3); bindEngine()
+    end)
+    Engine._conn = RunService.Heartbeat:Connect(function(dt) pcall(tickEngine, dt) end)
+end
+
+function Engine.Stop()
+    Engine.Enabled = false
+    if Engine._conn then Engine._conn:Disconnect(); Engine._conn = nil end
+    if Engine._charConn then Engine._charConn:Disconnect(); Engine._charConn = nil end
+    destroyEngine()
+    Engine._hrp = nil
+end
+
+function Engine.SetSpeed(v)        v = tonumber(v); if v then Engine.Speed = v end end
+function Engine.SetCopyFromKart(v) Engine.CopyFromKart = v and true or false end
+
+-- ============================================================
+-- RAMP / VERT NITRO / GYRO LOCK
+-- ============================================================
+local RampTypes = { "Small Ramp", "Big Ramp", "Left Ramp", "Right Ramp" }
+local SelectedRampIndex = 1
+local RampRotation = Vector3.new(0, 180, 0)
+local RampOffsets = {
+    ["Small Ramp"] = { groundOffset = Vector3.new(3.5, -2.5, -40), flyingOffset = Vector3.new(3.5, 10, -80) },
+    ["Big Ramp"]   = { groundOffset = Vector3.new(3.5, -2.5, -40), flyingOffset = Vector3.new(3.5, 10, -80) },
+    ["Left Ramp"]  = { groundOffset = Vector3.new(3.5, -2.5, -40), flyingOffset = Vector3.new(3.5, 10, -80) },
+    ["Right Ramp"] = { groundOffset = Vector3.new(3.5, -2.5, -40), flyingOffset = Vector3.new(3.5, 10, -80) }
+}
+local NormalEngineAttributes = {
+    nitroForce = 40, nitroTorque = 400, nitroTime = 100000,
+    forwardMaxSpeed = 115, nitroMaxSpeed = 10, brakeTorque = 100,
+    deceleration = 100, handBrakeTorque = 50, reverseMaxSpeed = 115, nitroAcceleration = 30
+}
+local BoostEngineAttributes = {
+    nitroForce = 100, nitroTorque = 1500, nitroTime = 100000,
+    forwardMaxSpeed = 250, nitroMaxSpeed = 1000, brakeTorque = 10000,
+    deceleration = 100000, handBrakeTorque = 50, reverseMaxSpeed = 250, nitroAcceleration = 100
+}
+local StealthEngineAttributes = {
+    nitroForce = 70, nitroTorque = 800, nitroTime = 100000,
+    forwardMaxSpeed = 180, nitroMaxSpeed = 300, brakeTorque = 5000,
+    deceleration = 50000, handBrakeTorque = 50, reverseMaxSpeed = 180, nitroAcceleration = 60
+}
+local RampDefinitions = {
+    ["Small Ramp"] = { modelName = "SmallRamp", parts = {
+        { shape = "Part", size = Vector3.new(8, 0.25, 8), pos = Vector3.new(3.6, 0.31, -11.016), angle = Vector3.new(-10, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 1.251, -7.165), angle = Vector3.new(-20, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 2.505, -4.476), angle = Vector3.new(-30, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 4.207, -2.046), angle = Vector3.new(-40, 0, 0) }
+    }},
+    ["Big Ramp"] = { modelName = "BigRamp", parts = {
+        { shape = "Part", size = Vector3.new(8, 0.25, 5), pos = Vector3.new(3.6, 0.31, -11.016), angle = Vector3.new(-10, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 1.251, -7.165), angle = Vector3.new(-20, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 2.505, -4.476), angle = Vector3.new(-30, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 4.207, -2.046), angle = Vector3.new(-40, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 3), pos = Vector3.new(3.6, 6.305, 0.052), angle = Vector3.new(-50, 0, 0) },
+        { shape = "Part", size = Vector3.new(8, 0.25, 5), pos = Vector3.new(3.6, 9.601, 2.254), angle = Vector3.new(-60, 0, 0) }
+    }},
+    ["Left Ramp"] = { modelName = "LeftRamp", parts = {
+        { shape = "Part", size = Vector3.new(8, 0.25, 8), pos = Vector3.new(3.6, 0.31, -11.016), angle = Vector3.new(-10, 0, 0) },
+        { shape = "Part", size = Vector3.new(7, 0.25, 3), pos = Vector3.new(3.1, 1.512, -5.688), angle = Vector3.new(-20, 0, 0) },
+        { shape = "Part", size = Vector3.new(6, 0.25, 3), pos = Vector3.new(2.6, 2.766, -2.999), angle = Vector3.new(-30, 0, 0) },
+        { shape = "Part", size = Vector3.new(5, 0.25, 3), pos = Vector3.new(2.1, 4.467, -0.569), angle = Vector3.new(-40, 0, 0) },
+        { shape = "Part", size = Vector3.new(4, 0.25, 3), pos = Vector3.new(1.6, 6.565, 1.529), angle = Vector3.new(-50, 0, 0) },
+        { shape = "Part", size = Vector3.new(3, 0.25, 3), pos = Vector3.new(1.1, 8.996, 3.231), angle = Vector3.new(-60, 0, 0) }
+    }},
+    ["Right Ramp"] = { modelName = "RightRamp", parts = {
+        { shape = "Part", size = Vector3.new(8, 0.25, 8), pos = Vector3.new(3.6, 0.31, -11.016), angle = Vector3.new(-10, 0, 0) },
+        { shape = "Part", size = Vector3.new(7, 0.25, 3), pos = Vector3.new(4.1, 1.512, -5.688), angle = Vector3.new(-20, 0, 0) },
+        { shape = "Part", size = Vector3.new(6, 0.25, 3), pos = Vector3.new(4.6, 2.766, -2.999), angle = Vector3.new(-30, 0, 0) },
+        { shape = "Part", size = Vector3.new(5, 0.25, 3), pos = Vector3.new(5.1, 4.467, -0.569), angle = Vector3.new(-40, 0, 0) },
+        { shape = "Part", size = Vector3.new(4, 0.25, 3), pos = Vector3.new(5.6, 6.565, 1.529), angle = Vector3.new(-50, 0, 0) },
+        { shape = "Part", size = Vector3.new(3, 0.25, 3), pos = Vector3.new(6.1, 8.996, 3.231), angle = Vector3.new(-60, 0, 0) }
+    }}
+}
+local Ramp = { BoostEnabled = false, BoostMode = "boost", CachedEngine = nil, Heartbeat = nil }
+function Ramp.GetPlayerKart()
+    local KF = Workspace:FindFirstChild("Karts")
+    return KF and KF:FindFirstChild(PlayerName)
+end
+function Ramp.GetKartEngine()
+    local PK = Ramp.GetPlayerKart()
+    if not PK then Ramp.CachedEngine = nil; return nil end
+    local E = PK:FindFirstChild("Engine")
+    if E ~= Ramp.CachedEngine then Ramp.CachedEngine = E end
+    return Ramp.CachedEngine
+end
+function Ramp.ApplyEngineAttributes(A)
+    local E = Ramp.GetKartEngine()
+    if not E then return end
+    for k, v in pairs(A) do
+        if E:GetAttribute(k) ~= v then E:SetAttribute(k, v) end
+    end
+end
+function Ramp.CreateRampPart(PD, BaseCFrame)
+    local RP = Instance.new("Part")
+    RP.Name = "RampPart"; RP.Anchored = true; RP.CanCollide = true
+    RP.Color = Color3.fromRGB(90, 13, 13); RP.Transparency = 0.5
+    RP.Size = PD.size
+    RP.CFrame = BaseCFrame * CFrame.new(PD.pos) * CFrame.Angles(math.rad(PD.angle.X), math.rad(PD.angle.Y), math.rad(PD.angle.Z))
+    return RP
+end
+function Ramp.SpawnRamp(Name, CF)
+    local RD = RampDefinitions[Name]
+    if not RD then return end
+    local RM = Instance.new("Model"); RM.Name = RD.modelName
+    for _, PD in ipairs(RD.parts) do
+        local RP = Ramp.CreateRampPart(PD, CF); RP.Parent = RM
+    end
+    RM.Parent = Workspace
+    Debris:AddItem(RM, 10)
+end
+function Ramp.SpawnSelected()
+    local RN = RampTypes[SelectedRampIndex]
+    local Ch = LocalPlayer.Character
+    if not Ch then return end
+    local RP = Ch:FindFirstChild("HumanoidRootPart")
+    if not RP then return end
+    local LV = RP.CFrame.LookVector
+    local FLV = Vector3.new(LV.X, 0, LV.Z)
+    if FLV.Magnitude <= 0.001 then FLV = Vector3.new(0, 0, -1) else FLV = FLV.Unit end
+    local CCF = CFrame.lookAt(RP.Position, RP.Position + FLV)
+    local PK = Ramp.GetPlayerKart()
+    local WH = PK and PK:FindFirstChild("Wheels")
+    local Fly2 = false
+    if WH then Fly2 = WH:GetAttribute("_isFlying") == true end
+    local ROD = RampOffsets[RN]
+    if not ROD then return end
+    local SO = Fly2 and ROD.flyingOffset or ROD.groundOffset
+    local RCF = CCF * CFrame.new(SO) * CFrame.Angles(math.rad(RampRotation.X), math.rad(RampRotation.Y), math.rad(RampRotation.Z))
+    Ramp.SpawnRamp(RN, RCF)
+end
+function Ramp.Cycle()
+    SelectedRampIndex += 1
+    if SelectedRampIndex > #RampTypes then SelectedRampIndex = 1 end
+    return RampTypes[SelectedRampIndex]
+end
+function Ramp.SetBoost(state)
+    Ramp.BoostEnabled = state
+    if state then
+        if Ramp.BoostMode == "stealth" then Ramp.ApplyEngineAttributes(StealthEngineAttributes)
+        else Ramp.ApplyEngineAttributes(BoostEngineAttributes) end
+    else Ramp.ApplyEngineAttributes(NormalEngineAttributes) end
+end
+function Ramp.SetBoostMode(mode)
+    if mode ~= "boost" and mode ~= "stealth" then return false end
+    Ramp.BoostMode = mode
+    if Ramp.BoostEnabled then Ramp.SetBoost(true) end
+    return true
+end
+
+local VertNitro = { Enabled = false, Force = 70, Attachment = nil, VectorForce = nil, Heartbeat = nil }
+function VertNitro.GetKart()
+    local KF = Workspace:FindFirstChild("Karts")
+    return KF and KF:FindFirstChild(PlayerName)
+end
+function VertNitro.GetRootPart()
+    local kart = VertNitro.GetKart()
+    if not kart then return nil end
+    return kart.PrimaryPart or kart:FindFirstChild("HumanoidRootPart")
+        or kart:FindFirstChild("Chassis") or kart:FindFirstChildWhichIsA("BasePart", true)
+end
+function VertNitro.DestroyForce()
+    if VertNitro.VectorForce then VertNitro.VectorForce:Destroy(); VertNitro.VectorForce = nil end
+    if VertNitro.Attachment then VertNitro.Attachment:Destroy(); VertNitro.Attachment = nil end
+end
+function VertNitro.EnsureForce()
+    if not VertNitro.Enabled then return end
+    local root = VertNitro.GetRootPart()
+    if not root then VertNitro.DestroyForce(); return end
+    if VertNitro.Attachment and VertNitro.Attachment.Parent ~= root then VertNitro.DestroyForce() end
+    if not VertNitro.Attachment then
+        local att = Instance.new("Attachment"); att.Name = "VertNitroAtt"; att.Parent = root
+        local vf = Instance.new("VectorForce")
+        vf.Name = "VertNitroForce"; vf.Attachment0 = att
+        vf.RelativeTo = Enum.ActuatorRelativeTo.World
+        vf.ApplyAtCenterOfMass = true
+        vf.Force = Vector3.new(0, VertNitro.Force * root.AssemblyMass, 0)
+        vf.Parent = root
+        VertNitro.Attachment = att; VertNitro.VectorForce = vf
+    else
+        VertNitro.VectorForce.Force = Vector3.new(0, VertNitro.Force * root.AssemblyMass, 0)
+    end
+end
+function VertNitro.Start()
+    if VertNitro.Heartbeat then VertNitro.Heartbeat:Disconnect() end
+    VertNitro.Enabled = true
+    VertNitro.Heartbeat = RunService.Heartbeat:Connect(function() pcall(VertNitro.EnsureForce) end)
+end
+function VertNitro.Stop()
+    VertNitro.Enabled = false
+    if VertNitro.Heartbeat then VertNitro.Heartbeat:Disconnect(); VertNitro.Heartbeat = nil end
+    VertNitro.DestroyForce()
+end
+function VertNitro.SetForce(v)
+    VertNitro.Force = v
+    if VertNitro.VectorForce then
+        local root = VertNitro.GetRootPart()
+        if root then VertNitro.VectorForce.Force = Vector3.new(0, VertNitro.Force * root.AssemblyMass, 0) end
+    end
+end
+
+local GyroLock = {
+    Enabled = false, LockX = false, LockY = false, LockZ = false,
+    Mode = "damp", Strength = 1, RefCFrame = nil, Heartbeat = nil,
+}
+function GyroLock.GetKart()
+    local KF = Workspace:FindFirstChild("Karts")
+    return KF and KF:FindFirstChild(PlayerName)
+end
+function GyroLock.GetRootPart()
+    local kart = GyroLock.GetKart()
+    if not kart then return nil end
+    return kart.PrimaryPart or kart:FindFirstChild("HumanoidRootPart")
+        or kart:FindFirstChild("Chassis") or kart:FindFirstChildWhichIsA("BasePart", true)
+end
+function GyroLock.Tick()
+    if not GyroLock.Enabled then return end
+    local root = GyroLock.GetRootPart()
+    if not root then GyroLock.RefCFrame = nil; return end
+    local av = root.AssemblyAngularVelocity
+    if GyroLock.Mode == "damp" then
+        local nX = GyroLock.LockX and av.X * (1 - GyroLock.Strength) or av.X
+        local nY = GyroLock.LockY and av.Y * (1 - GyroLock.Strength) or av.Y
+        local nZ = GyroLock.LockZ and av.Z * (1 - GyroLock.Strength) or av.Z
+        root.AssemblyAngularVelocity = Vector3.new(nX, nY, nZ)
+    elseif GyroLock.Mode == "freeze" then
+        if not GyroLock.RefCFrame then GyroLock.RefCFrame = root.CFrame; return end
+        local rx, ry, rz = GyroLock.RefCFrame:ToOrientation()
+        local cx, cy, cz = root.CFrame:ToOrientation()
+        local nRx = GyroLock.LockX and rx or cx
+        local nRy = GyroLock.LockY and ry or cy
+        local nRz = GyroLock.LockZ and rz or cz
+        root.CFrame = CFrame.new(root.Position) * CFrame.Angles(nRx, nRy, nRz)
+        local av2 = root.AssemblyAngularVelocity
+        root.AssemblyAngularVelocity = Vector3.new(
+            GyroLock.LockX and 0 or av2.X,
+            GyroLock.LockY and 0 or av2.Y,
+            GyroLock.LockZ and 0 or av2.Z)
+    end
+end
+function GyroLock.Start()
+    if GyroLock.Heartbeat then GyroLock.Heartbeat:Disconnect() end
+    GyroLock.Enabled = true; GyroLock.RefCFrame = nil
+    GyroLock.Heartbeat = RunService.Heartbeat:Connect(function() pcall(GyroLock.Tick) end)
+end
+function GyroLock.Stop()
+    GyroLock.Enabled = false
+    if GyroLock.Heartbeat then GyroLock.Heartbeat:Disconnect(); GyroLock.Heartbeat = nil end
+    GyroLock.RefCFrame = nil
+end
+function GyroLock.SetStrength(v) if v < 0 then v = 0 end; if v > 1 then v = 1 end; GyroLock.Strength = v end
+
+-- ============================================================
+-- TP HELPERS
+-- ============================================================
+local ClickTP = { Tool = nil, Sequence = false }
+function ClickTP.Create()
+    if ClickTP.Tool and ClickTP.Tool.Parent then return end
+    local bp = LocalPlayer:WaitForChild("Backpack", 5)
+    if not bp then return end
+    local tool = Instance.new("Tool")
+    tool.Name = "Click TP"; tool.RequiresHandle = false; tool.CanBeDropped = false
+    tool.ToolTip = "Click to teleport"; tool.Parent = bp
+    local function tp(dest)
+        if ClickTP.Sequence then return end
+        ClickTP.Sequence = true
+        TPHelpers.TeleportTo(dest)
+        ClickTP.Sequence = false
+    end
+    tool.Activated:Connect(function()
+        local mouse = LocalPlayer:GetMouse()
+        if mouse and mouse.Hit then tp(mouse.Hit.Position + Vector3.new(0, 3, 0)) end
+    end)
+    ClickTP.Tool = tool
+end
+function ClickTP.Remove()
+    if ClickTP.Tool then pcall(function() ClickTP.Tool:Destroy() end); ClickTP.Tool = nil end
+end
+
+local V2TP = { Tool = nil, Sequence = false }
+function V2TP.Create()
+    if V2TP.Tool and V2TP.Tool.Parent then return end
+    local bp = LocalPlayer:WaitForChild("Backpack", 5)
+    if not bp then return end
+    local tool = Instance.new("Tool")
+    tool.Name = "V2 TP Tool"; tool.RequiresHandle = false; tool.CanBeDropped = false
+    tool.ToolTip = "Click to sit-teleport"; tool.Parent = bp
+    local function tp(dest)
+        if V2TP.Sequence then return end
+        V2TP.Sequence = true
+        local ch = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local hrp = ch:WaitForChild("HumanoidRootPart")
+        local hum = ch:WaitForChild("Humanoid")
+        local slow = ch:FindFirstChild("Slow")
+        if slow then pcall(function() slow:Destroy() end) end
+
+        local seat = Instance.new("Seat")
+        seat.Name = "NhackW_TPSeat"
+        seat.Anchored = true
+        seat.CanCollide = false
+        seat.Transparency = 1
+        seat.Size = Vector3.new(2, 0.5, 2)
+        seat.CFrame = hrp.CFrame
+        seat.Parent = Workspace
+
+        pcall(function() seat:Sit(hum) end)
+        task.wait(0.1)
+
+        local startPos = hrp.Position
+        local delta = dest - startPos
+        local dist = delta.Magnitude
+        local stepLen = 40
+        local steps = math.max(1, math.ceil(dist / stepLen))
+        local step = delta / steps
+        for i = 1, steps do
+            hrp.CFrame = CFrame.new(hrp.Position + step)
+            seat.CFrame = CFrame.new(hrp.Position + step)
+            task.wait(0.06)
+        end
+        hrp.CFrame = CFrame.new(dest)
+        seat.CFrame = CFrame.new(dest)
+
+        task.wait(1.1)
+        pcall(function() seat:Destroy() end)
+        hum.Sit = false
+        task.wait(0.1)
+        V2TP.Sequence = false
+    end
+    tool.Activated:Connect(function()
+        local mouse = LocalPlayer:GetMouse()
+        if mouse and mouse.Hit then tp(mouse.Hit.Position + Vector3.new(0, 3, 0)) end
+    end)
+    V2TP.Tool = tool
+end
+function V2TP.Remove()
+    if V2TP.Tool then pcall(function() V2TP.Tool:Destroy() end); V2TP.Tool = nil end
+end
+
+TPHelpers = TPHelpers or {}
+TPHelpers.SavedPos = nil
+TPHelpers.StepLen = 40
+TPHelpers.StepWait = 0.06
+
+function TPHelpers.FindClosestByName(name, maxRadius)
+    maxRadius = maxRadius or 99999
+    local ch = LocalPlayer.Character
+    if not ch then return nil end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local meuPos = hrp.Position
+    local best, bestDist = nil, maxRadius
+    local function scan(p)
+        for _, item in ipairs(p:GetChildren()) do
+            if item.Name == name then
+                local pos
+                if item:IsA("BasePart") then pos = item.Position
+                elseif item:IsA("Model") then
+                    local ok, pp = pcall(function() return item:GetPivot().Position end)
+                    if ok then pos = pp end
+                end
+                if pos then
+                    local d = (pos - meuPos).Magnitude
+                    if d < bestDist then best, bestDist = pos, d end
+                end
+            end
+            if #item:GetChildren() > 0 then scan(item) end
+        end
+    end
+    scan(Workspace)
+    return best, bestDist
+end
+
+function TPHelpers.TeleportTo(pos)
+    if not pos then return false end
+    local ch = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hrp = ch:WaitForChild("HumanoidRootPart")
+    local slow = ch:FindFirstChild("Slow")
+    if slow then pcall(function() slow:Destroy() end) end
+
+    hrp.CFrame = CFrame.new(-48, 28, 255)
+    task.wait(0.25)
+
+    local startPos = hrp.Position
+    local delta = pos - startPos
+    local dist = delta.Magnitude
+    local stepLen = TPHelpers.StepLen
+    local steps = math.max(1, math.ceil(dist / stepLen))
+    local step = delta / steps
+    for i = 1, steps do
+        hrp.CFrame = CFrame.new(hrp.Position + step)
+        task.wait(TPHelpers.StepWait)
+    end
+    hrp.CFrame = CFrame.new(pos)
+    task.wait(0.15)
+    return true
+end
+
+function TPHelpers.TeleportToPumpkin()
+    local pos = TPHelpers.FindClosestByName("IS_FALL_1", 5000)
+    if pos then return TPHelpers.TeleportTo(pos + Vector3.new(0, 3, 0)) end
+    return false
+end
+function TPHelpers.TeleportToOGMoney()
+    local pos = TPHelpers.FindClosestByName("OG_Money", 5000)
+    if pos then return TPHelpers.TeleportTo(pos + Vector3.new(0, 3, 0)) end
+    return false
+end
+function TPHelpers.SavePos()
+    local ch = LocalPlayer.Character
+    if not ch then return false end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    TPHelpers.SavedPos = hrp.CFrame
+    return true
+end
+function TPHelpers.GoToSavedPos()
+    if not TPHelpers.SavedPos then return false end
+    return TPHelpers.TeleportTo(TPHelpers.SavedPos.Position)
+end
+
+-- ============================================================
+-- LOOP TP
+-- ============================================================
+local LoopTP = {
+    Enabled = false, Target = nil,
+    Distance = 0, OrbitSpeed = 5, Angle = 0,
+    LeadMultiplier = 1.5, VerticalOffset = 1.5, PingFallback = 0.06,
+    _conn = nil,
+}
+local function getPingSeconds()
+    local ok, ping = pcall(function() return LocalPlayer:GetNetworkPing() end)
+    if ok and type(ping) == "number" and ping > 0 then return ping end
+    return LoopTP.PingFallback
+end
+function LoopTP.Start(target, opts)
+    if LoopTP._conn then LoopTP._conn:Disconnect(); LoopTP._conn = nil end
+    if not target or not target.Character then return end
+    opts = opts or {}
+    LoopTP.Target = target
+    LoopTP.Distance = opts.distance or LoopTP.Distance or 0
+    LoopTP.OrbitSpeed = opts.orbitSpeed or LoopTP.OrbitSpeed or 5
+    LoopTP.LeadMultiplier = opts.lead or LoopTP.LeadMultiplier or 1.5
+    LoopTP.VerticalOffset = opts.verticalOffset or LoopTP.VerticalOffset or 1.5
+    LoopTP.Angle = 0
+    LoopTP.Enabled = true
+
+    local ch = LocalPlayer.Character
+    if ch then
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if hum and hum.SeatPart then hum.Sit = false; task.wait(0.1) end
+    end
+
+    local lastClock = os.clock()
+    LoopTP._conn = RunService.Heartbeat:Connect(function()
+        if not LoopTP.Enabled then return end
+        local t = LoopTP.Target
+        if not t or not t.Parent or not t.Character then LoopTP.Stop(); return end
+        local myCh = LocalPlayer.Character
+        local myRoot = myCh and myCh:FindFirstChild("HumanoidRootPart")
+        local tgtRoot = t.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot or not tgtRoot then return end
+        local now = os.clock()
+        local dt = now - lastClock
+        lastClock = now
+        if dt <= 0 or dt > 0.25 then dt = 1/60 end
+        local ping = getPingSeconds()
+        local lead = ping * LoopTP.LeadMultiplier + dt
+        local vel = tgtRoot.AssemblyLinearVelocity
+        local predicted = tgtRoot.Position + vel * lead
+        local offset = Vector3.new(0, LoopTP.VerticalOffset, 0)
+        if LoopTP.Distance > 0 then
+            LoopTP.Angle = LoopTP.Angle + (LoopTP.OrbitSpeed * dt)
+            if LoopTP.Angle >= 360 then LoopTP.Angle = LoopTP.Angle - 360 end
+            local rad = math.rad(LoopTP.Angle)
+            offset = offset + Vector3.new(math.cos(rad) * LoopTP.Distance, 0, math.sin(rad) * LoopTP.Distance)
+        end
+        local newPos = predicted + offset
+        myRoot.CFrame = CFrame.new(newPos, predicted)
+        myRoot.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        myRoot.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end)
+end
+function LoopTP.Stop()
+    LoopTP.Enabled = false
+    LoopTP.Target = nil
+    if LoopTP._conn then LoopTP._conn:Disconnect(); LoopTP._conn = nil end
+end
+function LoopTP.SetLead(v)     v = tonumber(v); if v then LoopTP.LeadMultiplier = v end end
+function LoopTP.SetDistance(v) v = tonumber(v); if v then LoopTP.Distance = v end end
+function LoopTP.SetOrbit(v)    v = tonumber(v); if v then LoopTP.OrbitSpeed = v end end
+function LoopTP.GetPingMs()
+    return math.floor(getPingSeconds() * 1000)
+end
+
+-- ============================================================
+-- KILLAURA
+-- ============================================================
+local KillAura = {
+    Enabled         = false,
+    MaxRate         = 720,
+    Gain            = 12,
+    MaxDist         = 1000,
+    TargetPart      = "HumanoidRootPart",
+    CurrentTarget   = nil,
+    _hrp            = nil,
+    _hum            = nil,
+    _bav            = nil,
+    _boundChar      = nil,
+    _conn           = nil,
+    _charConn       = nil,
+    _origAutoRotate = nil,
+    _lastFlagTime   = 0,
+}
+local function isAliveForAim(plr)
+    local ch = plr.Character
+    if not ch then return false end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if ch:GetAttribute("Dead") == true then return false end
+    return true
+end
+function KillAura.GetClosest()
+    local ch = LocalPlayer.Character
+    if not ch then return nil end
+    local myHRP = ch:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+    local myPos = myHRP.Position
+    local best, bestDist = nil, KillAura.MaxDist
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and isAliveForAim(plr) then
+            local och = plr.Character
+            local part = och:FindFirstChild(KillAura.TargetPart)
+                      or och:FindFirstChild("HumanoidRootPart")
+                      or och:FindFirstChild("Head")
+            if part then
+                local d = (part.Position - myPos).Magnitude
+                if d < bestDist then best, bestDist = part, d end
+            end
+        end
+    end
+    return best, bestDist
+end
+function KillAura.Bind()
+    local ch = LocalPlayer.Character
+    if not ch then return end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp then return end
+    if KillAura._bav then pcall(function() KillAura._bav:Destroy() end); KillAura._bav = nil end
+    if KillAura._hum and KillAura._hum.Parent and KillAura._origAutoRotate ~= nil then
+        pcall(function() KillAura._hum.AutoRotate = KillAura._origAutoRotate end)
+    end
+    KillAura._hum = hum
+    KillAura._hrp = hrp
+    KillAura._boundChar = ch
+    KillAura._origAutoRotate = hum.AutoRotate
+    hum.AutoRotate = false
+    local bav = Instance.new("BodyAngularVelocity")
+    bav.Name = "NhackW_Spin"
+    bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bav.AngularVelocity = Vector3.new(0, 0, 0)
+    bav.P = 3000
+    bav.Parent = hrp
+    KillAura._bav = bav
+end
+function KillAura.WatchCharacter()
+    if KillAura._charConn then KillAura._charConn:Disconnect() end
+    KillAura._charConn = LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(0.2); KillAura.Bind()
+    end)
+end
+local function angleDelta(from, to)
+    local d = to - from
+    while d >  math.pi do d = d - math.pi * 2 end
+    while d < -math.pi do d = d + math.pi * 2 end
+    return d
+end
+function KillAura.Tick(dt)
+    if not KillAura.Enabled then return end
+    local ch = LocalPlayer.Character
+    if not ch or ch ~= KillAura._boundChar then KillAura.Bind(); return end
+    local hrp = KillAura._hrp
+    local bav = KillAura._bav
+    if not hrp or not hrp.Parent or not bav or not bav.Parent then return end
+    local target = KillAura.GetClosest()
+    KillAura.CurrentTarget = target
+    if not target then bav.AngularVelocity = Vector3.new(0, 0, 0); return end
+    local myPos = hrp.Position
+    local tgtPos = target.Position
+    local flat = Vector3.new(tgtPos.X - myPos.X, 0, tgtPos.Z - myPos.Z)
+    if flat.Magnitude < 0.05 then bav.AngularVelocity = Vector3.new(0, 0, 0); return end
+    flat = flat.Unit
+    local _, curY, _ = hrp.CFrame:ToOrientation()
+    local desiredY = math.atan2(-flat.X, -flat.Z)
+    local dY = angleDelta(curY, desiredY)
+    local maxRad = math.rad(KillAura.MaxRate)
+    local angVelY = math.clamp(dY * KillAura.Gain, -maxRad, maxRad)
+    bav.AngularVelocity = Vector3.new(0, angVelY, 0)
+end
+function KillAura.Start()
+    if KillAura._conn then return end
+    KillAura.Enabled = true
+    KillAura.Bind()
+    KillAura.WatchCharacter()
+    KillAura._conn = RunService.Heartbeat:Connect(function(dt) pcall(KillAura.Tick, dt) end)
+end
+function KillAura.Stop()
+    KillAura.Enabled = false
+    if KillAura._conn then KillAura._conn:Disconnect(); KillAura._conn = nil end
+    if KillAura._charConn then KillAura._charConn:Disconnect(); KillAura._charConn = nil end
+    if KillAura._bav then pcall(function() KillAura._bav:Destroy() end); KillAura._bav = nil end
+    if KillAura._hum and KillAura._hum.Parent and KillAura._origAutoRotate ~= nil then
+        pcall(function() KillAura._hum.AutoRotate = KillAura._origAutoRotate end)
+    end
+    KillAura._hum = nil
+    KillAura._hrp = nil
+    KillAura._boundChar = nil
+    KillAura.CurrentTarget = nil
+end
+function KillAura.SetMaxRate(v)   v = tonumber(v); if v then KillAura.MaxRate = v end end
+function KillAura.SetGain(v)      v = tonumber(v); if v then KillAura.Gain = v end end
+function KillAura.SetMaxDist(v)   v = tonumber(v); if v then KillAura.MaxDist = v end end
+function KillAura.SetTargetPart(v) KillAura.TargetPart = v end
+
+-- ============================================================
+-- AUTO EAT + FARM
+-- ============================================================
+local CONFIG = {
+    FOOD_MODE = "auto", HUNGER_MIN = 15, HUNGER_MAX = 90, EAT_MAX_ATTEMPTS = 200,
+    OFFSET_X = 0, OFFSET_Y = 0, OFFSET_Z = 0,
+}
+
+local function AutoEatRice(forceBasic)
+    local ch = LocalPlayer.Character
+    if not ch then return false end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    local names = forceBasic and {"Basic Food"} or {"Best Food", "Good Food", "Basic Food"}
+    local tool = nil
+    for _, name in ipairs(names) do
+        local t = LocalPlayer.Backpack:FindFirstChild(name) or ch:FindFirstChild(name)
+        if t and t:IsA("Tool") then tool = t; break end
+    end
+    if not tool then
+        local S = Workspace:FindFirstChild("Stores")
+        local F = S and S:FindFirstChild("Food")
+        local Seats = F and F:FindFirstChild("CustomerSeats")
+        if not Seats then return false end
+        local pr = forceBasic and {"1"} or {"1", "2", "3"}
+        local seat = nil
+        for _, sn in ipairs(pr) do
+            local s = Seats:FindFirstChild(sn)
+            if s and not s.Occupant then seat = s; break end
+        end
+        if not seat then return false end
+        pcall(function() seat:Sit(hum) end)
+        task.wait(0.4)
+        for i = 1, 10 do
+            for _, name in ipairs(names) do
+                local t = LocalPlayer.Backpack:FindFirstChild(name)
+                if t and t:IsA("Tool") then tool = t; break end
+            end
+            if tool then break end
+            task.wait(0.1)
+        end
+        if not tool then return false end
+    end
+    pcall(function() hum:EquipTool(tool) end)
+    task.wait(0.05)
+    local ok = pcall(function() tool:Activate() end)
+    task.wait(0.4)
+    return ok
+end
+
+local function AutoEatPopcorn()
+    local ch = LocalPlayer.Character
+    if not ch then return false end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    local tool = LocalPlayer.Backpack:FindFirstChild("Popcorn") or ch:FindFirstChild("Popcorn")
+    if not tool then
+        local BS = Workspace:FindFirstChild("BarbStores")
+        local P = BS and BS:FindFirstChild("Popcorn")
+        local S = P and P:FindFirstChild("CustomerSeat")
+        if not S then return false end
+        if S.Occupant ~= hum then pcall(function() S:Sit(hum) end); task.wait(0.4) end
+        for i = 1, 10 do
+            tool = LocalPlayer.Backpack:FindFirstChild("Popcorn") or ch:FindFirstChild("Popcorn")
+            if tool then break end
+            task.wait(0.1)
+        end
+        if not tool then return false end
+    end
+    pcall(function() hum:EquipTool(tool) end)
+    task.wait(0.05)
+    local ok = pcall(function() tool:Activate() end)
+    task.wait(0.25)
+    return ok
+end
+
+local function AutoEat()
+    if CONFIG.FOOD_MODE == "popcorn" then return AutoEatPopcorn()
+    elseif CONFIG.FOOD_MODE == "rice" then return AutoEatRice(false)
+    else
+        local ok = AutoEatRice(true)
+        if ok then return true end
+        return AutoEatPopcorn()
+    end
+end
+
+local FarmState = {
+    Enabled = false, Paused = false, RiceCount = 0,
+    LastRice = nil, RiceFolder = nil, KartStatus = "не найден",
+}
+function FarmState.GetRice()
+    if not FarmState.RiceFolder then FarmState.RiceFolder = Workspace:FindFirstChild("Rice") end
+    if not FarmState.RiceFolder then return nil end
+    local K = Workspace:FindFirstChild("Karts")
+    local kart = K and K:FindFirstChild(PlayerName)
+    local kp = kart and kart.PrimaryPart and kart.PrimaryPart.Position
+    if not kp then return nil end
+    local live = {}
+    for _, rice in ipairs(FarmState.RiceFolder:GetChildren()) do
+        if rice:IsA("Model") then
+            local hp = rice:GetAttribute("Health")
+            local rw = rice:GetAttribute("Reward")
+            local pp = rice.PrimaryPart
+            if hp and hp > 0 and rw and rw > 0 and pp then
+                table.insert(live, { rice = rice, pp = pp, dist = (pp.Position - kp).Magnitude })
+            end
+        end
+    end
+    if #live == 0 then return nil end
+    table.sort(live, function(a, b) return a.dist < b.dist end)
+    for _, e in ipairs(live) do
+        if e.rice ~= FarmState.LastRice then FarmState.LastRice = e.rice; return e.rice, e.pp end
+    end
+    FarmState.LastRice = live[1].rice
+    return live[1].rice, live[1].pp
+end
+function FarmState.UseKart(kart)
+    if kart.Name ~= PlayerName then return end
+    local seat = kart:FindFirstChildOfClass("VehicleSeat")
+    if not seat then return end
+    local kR = kart.PrimaryPart
+    if not kR then return end
+    while kart.Parent and FarmState.Enabled and not FarmState.Paused do
+        local ch = LocalPlayer.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        if not hum then break end
+        if seat.Occupant ~= hum then pcall(function() seat:Sit(hum) end) end
+        local rice, part = FarmState.GetRice()
+        if rice and part then
+            pcall(function()
+                kR.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                kR.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+            pcall(function()
+                kart:SetPrimaryPartCFrame(part.CFrame * CFrame.new(CONFIG.OFFSET_X, CONFIG.OFFSET_Y, CONFIG.OFFSET_Z))
+            end)
+            pcall(function()
+                kR.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                kR.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+            FarmState.RiceCount = FarmState.RiceCount + 1
+            task.wait(0.15)
+            local stillHp = rice:GetAttribute("Health")
+            if stillHp and stillHp > 0 then
+                task.wait(0.15)
+                pcall(function()
+                    kart:SetPrimaryPartCFrame(part.CFrame * CFrame.new(CONFIG.OFFSET_X, CONFIG.OFFSET_Y, CONFIG.OFFSET_Z))
+                end)
+                task.wait(0.1)
+            end
+            FarmState.LastRice = rice
+        else
+            task.wait(0.3)
+        end
+        task.wait(0.02)
+    end
+end
+local farmLoop, eatLoop, floodLoop = nil, nil, nil
+local function StartFloodLoop()
+    if floodLoop then return end
+    floodLoop = task.spawn(function()
+        while FarmState.Enabled do
+            local ch = LocalPlayer.Character
+            if ch then
+                local F = ch:FindFirstChild("Float")
+                if F then pcall(function() F.Disabled = true; F:Destroy() end) end
+            end
+            task.wait()
+        end
+        floodLoop = nil
+    end)
+end
+local function StartEatLoop()
+    if eatLoop then return end
+    eatLoop = task.spawn(function()
+        while FarmState.Enabled do
+            local stats = LocalPlayer:FindFirstChild("stats")
+            local hunger = stats and stats:FindFirstChild("Hunger")
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if hunger and hum and hunger.Value < CONFIG.HUNGER_MIN then
+                FarmState.Paused = true
+                hum.Sit = false
+                task.wait(0.3)
+                if hum.Sit then
+                    local K = Workspace:FindFirstChild("Karts")
+                    local kart = K and K:FindFirstChild(PlayerName)
+                    if kart then
+                        local seat = kart:FindFirstChildOfClass("VehicleSeat")
+                        if seat then pcall(function() seat:Sit(nil) end) end
+                    end
+                    task.wait(0.3)
+                end
+                local attempts = 0
+                local fails = 0
+                while FarmState.Enabled and hunger.Value < CONFIG.HUNGER_MAX and attempts < CONFIG.EAT_MAX_ATTEMPTS do
+                    attempts = attempts + 1
+                    local ok = AutoEat()
+                    fails = ok and 0 or (fails + 1)
+                    local w = 0.3
+                    if fails > 10 then w = 2 elseif fails > 3 then w = 1 end
+                    task.wait(w)
+                end
+                FarmState.Paused = false
+                task.wait(1)
+            end
+            task.wait(2)
+        end
+        eatLoop = nil
+    end)
+end
+local function StartFarmLoop()
+    if farmLoop then return end
+    farmLoop = task.spawn(function()
+        FarmState.RiceFolder = Workspace:FindFirstChild("Rice")
+        while FarmState.Enabled do
+            local K = Workspace:FindFirstChild("Karts")
+            local ch = LocalPlayer.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if not FarmState.Paused then
+                if not K or not K:FindFirstChild(PlayerName) then
+                    FarmState.KartStatus = "не найден"
+                    if hum and hum.Health <= 0 then
+                        local re = ReplicatedStorage:FindFirstChild("RemoteEvent")
+                        if re then pcall(function() re:FireServer("Respawn") end) end
+                    else
+                        local tool = LocalPlayer.Backpack:FindFirstChild("FarmKart")
+                        if tool then tool:Activate(); FarmState.KartStatus = "активирую..."
+                        else FarmState.KartStatus = "нет FarmKart" end
+                    end
+                else
+                    FarmState.KartStatus = "работает"
+                    local kart = K[PlayerName]
+                    for _, v in ipairs(kart:GetDescendants()) do
+                        if v:IsA("BasePart") then v.CanCollide = false end
+                    end
+                    FarmState.UseKart(kart)
+                end
+            end
+            task.wait(2.3)
+        end
+        farmLoop = nil
+    end)
+end
+function FarmState.Start()
+    if FarmState.Enabled then return end
+    FarmState.Enabled = true; FarmState.RiceCount = 0; FarmState.LastRice = nil
+    StartFarmLoop(); StartEatLoop(); StartFloodLoop()
+end
+function FarmState.Stop()
+    FarmState.Enabled = false; FarmState.Paused = false
+end
+
+-- ============================================================
+-- MAIN TAB
+-- ============================================================
+Tabs.Main:AddParagraph({
+    Title = "NhackWare v0.5",
+    Content = "GRG client."
+})
+
+local annoyEnabled = false
+Tabs.Main:AddToggle("AnnoyToggle", {
+    Title = "Annoy all near", Description = "Spams sounds (10 Hz)", Default = false,
+    Callback = function(state)
+        annoyEnabled = state
+        if state then
+            task.spawn(function()
+                while annoyEnabled do
+                    local ch = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+                    local H = ch:WaitForChild("Head")
+                    local SSE = ch:WaitForChild("ServerSoundEvent")
+                    for _, s in pairs(H:GetChildren()) do
+                        if s:IsA("Sound") then pcall(function() SSE:FireServer(s, "Play") end) end
+                    end
+                    task.wait(0.1)
+                    if not ch.Parent then LocalPlayer.CharacterAdded:Wait() end
+                end
+            end)
+        end
+    end
+})
+
+Tabs.Main:AddToggle("OGMoneyESP", {
+    Title = "OG Money ESP", Default = false,
+    Callback = function(s) ESP.ogMoneyAtivo = s; if s then ESP.iniciarOGMoney() else ESP.pararOGMoney() end end
+})
+
+Tabs.Main:AddToggle("TreeEntitiesESP", {
+    Title = "Tree Entities ESP", Default = false,
+    Callback = function(s) ESP.treeEntitiesAtivo = s; if s then ESP.iniciarTreeEntities() else ESP.pararTreeEntities() end end
+})
+Tabs.Main:AddToggle("PumpkinESP", {
+    Title = "Pumpkin ESP", Default = false,
+    Callback = function(s) ESP.pumpkinAtivo = s; if s then ESP.iniciarPumpkin() else ESP.pararPumpkin() end end
+})
+Tabs.Main:AddToggle("LeaderESP", {
+    Title = "👑 Leader ESP", Description = "Подсветка игроков с ролью Leader", Default = false,
+    Callback = function(s) ESP.leaderAtivo = s; if s then ESP.iniciarLeader() else ESP.pararLeader() end end
+})
+
+Tabs.Main:AddButton({ Title = "Click TP Tool", Callback = function() ClickTP.Create() end })
+Tabs.Main:AddButton({ Title = "V2 TP Tool (safe-step)", Callback = function() V2TP.Create() end })
+Tabs.Main:AddButton({
+    Title = "Save Pos",
+    Callback = function()
+        if TPHelpers.SavePos() then Fluent:Notify({ Title = "TP", Content = "Позиция сохранена" }) end
+    end
+})
+Tabs.Main:AddButton({ Title = "Go To Saved Pos", Callback = function() TPHelpers.GoToSavedPos() end })
+Tabs.Main:AddButton({ Title = "TP to Pumpkin", Callback = function() TPHelpers.TeleportToPumpkin() end })
+Tabs.Main:AddButton({ Title = "TP to OG Money", Callback = function() TPHelpers.TeleportToOGMoney() end })
+
+-- ============================================================
+-- RAGE TAB
+-- ============================================================
+local tpTargetPlayer = nil
+
+local function getPlayerList()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then 
+            table.insert(list, p.Name) 
+        end
+    end
+    if next(list) == nil then
+        return { "(no players)" } 
+    end
+    return list
+end
+
+local TpDropdown = Tabs.Rage:AddDropdown("TpTargetDropdown", {
+    Title = "Loop TP Target",
+    Values = getPlayerList(),
+    Multi = false,
+    Default = 1,
+    Callback = function(v) 
+        if v ~= "(no players)" then 
+            tpTargetPlayer = v 
+        else
+            tpTargetPlayer = nil
+        end
+    end
+})
+
+local function updateDropdown()
+    local newList = getPlayerList()
+    TpDropdown.Values = newList
+    TpDropdown:Set(newList[1])
+    if tpTargetPlayer and not table.find(newList, tpTargetPlayer) then
+        tpTargetPlayer = nil
+    end
+end
+
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        task.wait(1) 
+        updateDropdown()
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if player ~= LocalPlayer then
+        updateDropdown()
+    end
+end)
+
+Tabs.Rage:AddSlider("LoopTPLead", {
+    Title = "Lead (× ping)", Default = 1.5, Min = 0, Max = 5, Rounding = 0.1,
+    Callback = function(v) LoopTP.SetLead(v) end
+})
+Tabs.Rage:AddSlider("LoopTPDist", {
+    Title = "TP Distance", Default = 0, Min = 0, Max = 30, Rounding = 1,
+    Callback = function(v) LoopTP.SetDistance(v) end
+})
+Tabs.Rage:AddSlider("LoopTPOrbit", {
+    Title = "Orbit Speed", Default = 5, Min = 0, Max = 60, Rounding = 1,
+    Callback = function(v) LoopTP.SetOrbit(v) end
+})
+Tabs.Rage:AddToggle("LoopTPToggle", {
+    Title = "Loop TP", Default = false,
+    Callback = function(s)
+        if s then
+            local t = nil
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Name == tpTargetPlayer then t = p end
+            end
+            if t then LoopTP.Start(t)
+            else Fluent:Notify({ Title = "LoopTP", Content = "Выбери цель" }) end
+        else
+            LoopTP.Stop()
+        end
+    end
+})
+
+Tabs.Rage:AddToggle("SpeedToggle", {
+    Title = "Speed (nitro)",
+    Description = "Перенос карт-нитро на персонажа. WalkSpeed не трогается.",
+    Default = false,
+    Callback = function(s)
+        if s then Engine.Start() else Engine.Stop() end
+    end
+})
+Tabs.Rage:AddSlider("SpeedValue", {
+    Title = "Speed", Default = 60, Min = 20, Max = 200, Rounding = 1,
+    Callback = function(v) Engine.SetSpeed(v) end
+})
+Tabs.Rage:AddToggle("SpeedCopyKart", {
+    Title = "Copy attrs from kart", Default = true,
+    Callback = function(s) Engine.SetCopyFromKart(s) end
+})
+
+Tabs.Rage:AddToggle("FlyToggle", {
+    Title = "Fly (hold Space)",
+    Description = "VectorForce push up. WalkSpeed не трогается.",
+    Default = false,
+    Callback = function(s) if s then Fly.Start() else Fly.Stop() end end
+})
+Tabs.Rage:AddInput("FlyForce", {
+    Title = "Fly Force", Default = "300", Numeric = true, Finished = true,
+    Callback = function(v) local n = tonumber(v); if n then Fly.SetForce(n) end end
+})
+
+Tabs.Rage:AddToggle("KAToggle", {
+    Title = "KillAura (spin to nearest)",
+    Description = "BodyAngularVelocity. Разворот к ближайшему, камера не трогается.",
+    Default = false,
+    Callback = function(s) if s then KillAura.Start() else KillAura.Stop() end end
+})
+Tabs.Rage:AddSlider("KAMaxRate", {
+    Title = "KA MaxRate", Default = 720, Min = 60, Max = 2000, Rounding = 10,
+    Callback = function(v) KillAura.SetMaxRate(v) end
+})
+Tabs.Rage:AddSlider("KAGain", {
+    Title = "KA Gain", Default = 12, Min = 1, Max = 50, Rounding = 1,
+    Callback = function(v) KillAura.SetGain(v) end
+})
+Tabs.Rage:AddSlider("KADist", {
+    Title = "KA Max Dist", Default = 1000, Min = 10, Max = 5000, Rounding = 10,
+    Callback = function(v) KillAura.SetMaxDist(v) end
+})
+Tabs.Rage:AddDropdown("KAPart", {
+    Title = "KA Target Part",
+    Values = { "HumanoidRootPart", "Head", "UpperTorso", "Torso" },
+    Default = "HumanoidRootPart", Multi = false,
+    Callback = function(v) KillAura.SetTargetPart(v) end
+})
+
+-- ============================================================
+-- PVE TAB
+-- ============================================================
+Tabs.PvE:AddToggle("FarmToggle", {
+    Title = "Auto Rice Farm", Default = false,
+    Callback = function(s) if s then FarmState.Start() else FarmState.Stop() end end
+})
+Tabs.PvE:AddDropdown("FoodModeDropdown", {
+    Title = "Food Mode", Values = { "auto", "rice", "popcorn" }, Default = "auto", Multi = false,
+    Callback = function(v) CONFIG.FOOD_MODE = v end
+})
+Tabs.PvE:AddInput("HungerMin", {
+    Title = "Hunger Min", Default = "15", Numeric = true, Finished = true,
+    Callback = function(v) local n = tonumber(v); if n then CONFIG.HUNGER_MIN = n end end
+})
+Tabs.PvE:AddInput("HungerMax", {
+    Title = "Hunger Max", Default = "90", Numeric = true, Finished = true,
+    Callback = function(v) local n = tonumber(v); if n then CONFIG.HUNGER_MAX = n end end
+})
+
+Tabs.PvE:AddToggle("VertNitroToggle", {
+    Title = "Vert Nitro (kart)", Default = false,
+    Callback = function(s) if s then VertNitro.Start() else VertNitro.Stop() end end
+})
+Tabs.PvE:AddInput("VertNitroForce", {
+    Title = "Vert Force", Default = "70", Numeric = true, Finished = true,
+    Callback = function(v) local n = tonumber(v); if n then VertNitro.SetForce(n) end end
+})
+Tabs.PvE:AddToggle("GyroToggle", {
+    Title = "Gyro Lock (kart)", Default = false,
+    Callback = function(s) if s then GyroLock.Start() else GyroLock.Stop() end end
+})
+Tabs.PvE:AddToggle("GyroX", { Title = "Lock X", Default = false, Callback = function(v) GyroLock.LockX = v end })
+Tabs.PvE:AddToggle("GyroY", { Title = "Lock Y", Default = false, Callback = function(v) GyroLock.LockY = v end })
+Tabs.PvE:AddToggle("GyroZ", { Title = "Lock Z", Default = false, Callback = function(v) GyroLock.LockZ = v end })
+Tabs.PvE:AddSlider("GyroStr", {
+    Title = "Damp Strength", Default = 1, Min = 0, Max = 1, Rounding = 2,
+    Callback = function(v) GyroLock.SetStrength(v) end
+})
+Tabs.PvE:AddToggle("RampBoostToggle", {
+    Title = "Engine Boost (kart)", Default = false,
+    Callback = function(s) Ramp.SetBoost(s) end
+})
+Tabs.PvE:AddDropdown("BoostModeDropdown", {
+    Title = "Boost Mode", Values = { "boost", "stealth" }, Default = "boost", Multi = false,
+    Callback = function(v) Ramp.SetBoostMode(v) end
+})
+Tabs.PvE:AddButton({
+    Title = "Spawn Ramp (cycle)",
+    Callback = function()
+        Ramp.SpawnSelected()
+        local nextR = Ramp.Cycle()
+        Fluent:Notify({ Title = "Ramp", Content = "Next: " .. nextR, Duration = 3 })
+    end
+})
+
+-- ============================================================
+-- INFO TAB
+-- ============================================================
+local infoSelf  = Tabs.Info:AddParagraph({ Title = "Self",  Content = "loading..." })
+local infoWorld = Tabs.Info:AddParagraph({ Title = "World", Content = "loading..." })
+local infoNet   = Tabs.Info:AddParagraph({ Title = "Network", Content = "loading..." })
+
+task.spawn(function()
+    while true do
+        task.wait(1.5)
+
+        local okPing, pingRaw = pcall(function() return LocalPlayer:GetNetworkPing() end)
+        local pingSec = (okPing and type(pingRaw) == "number") and pingRaw or 0
+        local pingMs = math.floor(pingSec * 1000)
+
+        pcall(function()
+            local ch = LocalPlayer.Character
+            local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            local selfLines = {
+                "name: " .. LocalPlayer.Name,
+                "display: " .. LocalPlayer.DisplayName,
+                "userid: " .. tostring(LocalPlayer.UserId),
+                "account age: " .. tostring(LocalPlayer.AccountAge) .. " days",
+                "character: " .. (ch and "loaded" or "nil"),
+                "health: " .. (hum and string.format("%d / %d", math.floor(hum.Health), math.floor(hum.MaxHealth)) or "—"),
+                "walkspeed: " .. (hum and string.format("%.1f", hum.WalkSpeed) or "—"),
+                "state: " .. (hum and hum:GetState().Name or "—"),
+                "position: " .. (hrp and string.format("%.0f, %.0f, %.0f", hrp.Position.X, hrp.Position.Y, hrp.Position.Z) or "—"),
+                "velocity: " .. (hrp and string.format("%.1f studs/s", hrp.AssemblyLinearVelocity.Magnitude) or "—"),
+                "team: " .. tostring(LocalPlayer.Team),
+                "hastool: " .. tostring(ch and ch:FindFirstChildWhichIsA("Tool") ~= nil),
+                "ping: " .. pingMs .. " ms",
+            }
+            infoSelf:SetDesc(table.concat(selfLines, "\n"))
+        end)
+
+        pcall(function()
+            local plrs = Players:GetPlayers()
+            local aliveEnemies, aliveAllies = 0, 0
+            local myTeam = LocalPlayer:GetAttribute("Team")
+            for _, p in ipairs(plrs) do
+                if p ~= LocalPlayer and p.Character then
+                    local h = p.Character:FindFirstChildOfClass("Humanoid")
+                    if h and h.Health > 0 then
+                        if myTeam ~= nil and p:GetAttribute("Team") == myTeam then
+                            aliveAllies = aliveAllies + 1
+                        else
+                            aliveEnemies = aliveEnemies + 1
+                        end
+                    end
+                end
+            end
+            local karts = Workspace:FindFirstChild("Karts")
+            local kart = karts and karts:FindFirstChild(PlayerName)
+            local worldLines = {
+                "players total: " .. #plrs,
+                "alive enemies: " .. aliveEnemies,
+                "alive allies: " .. aliveAllies,
+                "my kart: " .. (kart and kart.Name or "—"),
+                "workspace kids: " .. #Workspace:GetChildren(),
+            }
+            infoWorld:SetDesc(table.concat(worldLines, "\n"))
+        end)
+
+        pcall(function()
+            local netLines = {
+                "ping: " .. pingMs .. " ms",
+                "place id: " .. tostring(game.PlaceId),
+                "job id: " .. tostring(game.JobId),
+                "game id: " .. tostring(game.GameId),
+                "loaded: " .. tostring(game.IsLoaded),
+                "server time: " .. os.date("%H:%M:%S"),
+                "client uptime: " .. string.format("%.0f s", tick() - (getgenv().GRG_BOOT_T or tick())),
+            }
+            infoNet:SetDesc(table.concat(netLines, "\n"))
+        end)
+    end
+end)
+
+-- ============================================================
+-- SETTINGS TAB
+-- ============================================================
+Tabs.Settings:AddToggle("SilentLog", {
+    Title = "Silent Log", Default = false,
+    Callback = function(s) getgenv().GRG_SILENT = s end
+})
+Tabs.Settings:AddButton({
+    Title = "Unload UI",
+    Callback = function()
+        Fly.Stop(); Engine.Stop(); VertNitro.Stop(); GyroLock.Stop(); LoopTP.Stop()
+        KillAura.Stop()
+        FarmState.Stop()
+        ClickTP.Remove(); V2TP.Remove()
+        ESP.pararOGMoney(); ESP.pararTreeEntities(); ESP.pararPumpkin(); ESP.pararLeader()
+        pcall(function() Fluent:Destroy() end)
+    end
+})
+
+Fluent:Notify({
+    Title = "NhackWare v0.5",
+    Content = "Загружено. RightShift — свернуть окно.",
+    Duration = 6
+})
+
+LOG("Loaded v0.5.")
