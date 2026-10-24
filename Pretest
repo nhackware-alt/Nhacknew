@@ -1,3 +1,92 @@
+-- ============================================================
+-- NHACKWARE INTRO (AUDIO + VIDEO)
+-- ============================================================
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+
+task.spawn(function()
+    -- 1. АУДИО
+    local githubAudioUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/start.mp3"
+    local localFileName = "nhackware_start.mp3"
+
+    local success, fileData = pcall(function()
+        return game:HttpGet(githubAudioUrl)
+    end)
+
+    if success and fileData then
+        pcall(writefile, localFileName, fileData)
+        local assetSuccess, customAssetId = pcall(function()
+            return getcustomasset(localFileName)
+        end)
+        if assetSuccess and customAssetId then
+            local sound = Instance.new("Sound")
+            sound.SoundId = customAssetId
+            sound.Volume = 1
+            sound.Parent = LocalPlayer.Character or Workspace
+            sound:Play()
+            sound.Ended:Connect(function()
+                sound:Destroy()
+            end)
+        end
+    end
+
+    -- 2. ВИДЕО
+    local githubVideoUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/NH_vlogo.mp4"
+    local localVideoName = "nhackware_logo.mp4"
+
+    local vSuccess, vFileData = pcall(function()
+        return game:HttpGet(githubVideoUrl)
+    end)
+
+    if vSuccess and vFileData then
+        pcall(writefile, localVideoName, vFileData)
+        local vAssetSuccess, vAssetId = pcall(function()
+            return getcustomasset(localVideoName)
+        end)
+        
+        if vAssetSuccess and vAssetId then
+            local introGui = Instance.new("ScreenGui")
+            introGui.Name = "NhackwareIntro"
+            introGui.ResetOnSpawn = false
+            introGui.IgnoreGuiInset = true
+            introGui.DisplayOrder = 999999
+            introGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+            local videoFrame = Instance.new("VideoFrame")
+            videoFrame.Size = UDim2.fromScale(1, 1)
+            videoFrame.Position = UDim2.fromScale(0.5, 0.5)
+            videoFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            videoFrame.Video = vAssetId
+            videoFrame.Playing = true
+            videoFrame.Looped = false
+            videoFrame.Parent = introGui
+
+            local skipBtn = Instance.new("TextButton")
+            skipBtn.Size = UDim2.new(0, 100, 0, 40)
+            skipBtn.Position = UDim2.new(1, -120, 1, -60)
+            skipBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            skipBtn.BackgroundTransparency = 0.5
+            skipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            skipBtn.Text = "SKIP"
+            skipBtn.Font = Enum.Font.GothamBold
+            skipBtn.TextSize = 16
+            skipBtn.Parent = introGui
+            
+            skipBtn.MouseButton1Click:Connect(function()
+                introGui:Destroy()
+            end)
+
+            videoFrame.Ended:Connect(function()
+                introGui:Destroy()
+            end)
+        end
+    end
+end)
+
+-- ============================================================
+-- UI INIT
+-- ============================================================
 local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/nhackware-alt/Nhacknew/refs/heads/main/NH_simple_mod_ui"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
