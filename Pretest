@@ -453,9 +453,16 @@ function Fly.CreateMobileButton()
     btn.TextSize = 20
     btn.Parent = gui
 
-    btn.MouseButton1Down:Connect(function() Fly.Holding = true end)
-    btn.MouseButton1Up:Connect(function() Fly.Holding = false end)
-    btn.MouseLeave:Connect(function() Fly.Holding = false end)
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            Fly.Holding = true
+        end
+    end)
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            Fly.Holding = false
+        end
+    end)
     
     Fly.MobileGui = gui
 end
@@ -586,23 +593,21 @@ local function tickEngine(dt)
     if not hum or hum.Health <= 0 then return end
 
     local maxSpeed = Engine.Speed
-    local onGround = hum.FloorMaterial ~= Enum.Material.Air
-
-    if Engine._lv then
-        Engine._lv.Enabled = onGround
-    end
-
-    if not onGround then return end
 
     local md = hum.MoveDirection
     local moving = md.Magnitude > 0.1
+
     local vel = hrp.AssemblyLinearVelocity
     local horiz = Vector3.new(vel.X, 0, vel.Z).Magnitude
+    local currentY = vel.Y
 
     if moving and horiz < maxSpeed then
         local dir = Vector3.new(md.X, 0, md.Z)
         if dir.Magnitude > 0.01 then
-            Engine._lv.VectorVelocity = dir.Unit * maxSpeed
+            dir = dir.Unit
+            -- Управляем только X и Z, оставляя Y как есть (гравитация работает)
+            Engine._lv.VectorVelocity = Vector3.new(dir.X * maxSpeed, currentY, dir.Z * maxSpeed)
+            
             if Engine._eng then
                 Engine._eng:SetAttribute("_isAccelerating", true)
                 Engine._eng:SetAttribute("_nitroEnabled", true)
@@ -611,7 +616,7 @@ local function tickEngine(dt)
             end
         end
     else
-        Engine._lv.VectorVelocity = Vector3.new(0, 0, 0)
+        Engine._lv.VectorVelocity = Vector3.new(0, currentY, 0)
         if Engine._eng then
             Engine._eng:SetAttribute("_isAccelerating", false)
             Engine._eng:SetAttribute("_speed", horiz)
@@ -1604,7 +1609,9 @@ local TpDropdown = Tabs.Rage:AddDropdown("TpTargetDropdown", {
 
 local function updateDropdown()
     local newList = getPlayerList()
-    TpDropdown.Values = newList
+    if TpDropdown and TpDropdown.SetValues then
+        pcall(function() TpDropdown:SetValues(newList) end)
+    end
     if tpTargetPlayer and not table.find(newList, tpTargetPlayer) then
         tpTargetPlayer = nil
     end
