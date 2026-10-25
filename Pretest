@@ -1,12 +1,10 @@
 -- ============================================================
--- NHACKWARE INTRO (AUDIO + VIDEO)
+-- NHACKWARE INTRO (AUDIO ONLY)
 -- ============================================================
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+local LocalPlayer = game:GetService("Players").LocalPlayer
 local Workspace = game:GetService("Workspace")
 
 task.spawn(function()
-    -- 1. АУДИО
     local githubAudioUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/start.mp3"
     local localFileName = "nhackware_start.mp3"
 
@@ -27,58 +25,6 @@ task.spawn(function()
             sound:Play()
             sound.Ended:Connect(function()
                 sound:Destroy()
-            end)
-        end
-    end
-
-    -- 2. ВИДЕО
-    local githubVideoUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/NH_vlogo.mp4"
-    local localVideoName = "nhackware_logo.mp4"
-
-    local vSuccess, vFileData = pcall(function()
-        return game:HttpGet(githubVideoUrl)
-    end)
-
-    if vSuccess and vFileData then
-        pcall(writefile, localVideoName, vFileData)
-        local vAssetSuccess, vAssetId = pcall(function()
-            return getcustomasset(localVideoName)
-        end)
-        
-        if vAssetSuccess and vAssetId then
-            local introGui = Instance.new("ScreenGui")
-            introGui.Name = "NhackwareIntro"
-            introGui.ResetOnSpawn = false
-            introGui.IgnoreGuiInset = true
-            introGui.DisplayOrder = 999999
-            introGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-            local videoFrame = Instance.new("VideoFrame")
-            videoFrame.Size = UDim2.fromScale(1, 1)
-            videoFrame.Position = UDim2.fromScale(0.5, 0.5)
-            videoFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-            videoFrame.Video = vAssetId
-            videoFrame.Playing = true
-            videoFrame.Looped = false
-            videoFrame.Parent = introGui
-
-            local skipBtn = Instance.new("TextButton")
-            skipBtn.Size = UDim2.new(0, 100, 0, 40)
-            skipBtn.Position = UDim2.new(1, -120, 1, -60)
-            skipBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-            skipBtn.BackgroundTransparency = 0.5
-            skipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            skipBtn.Text = "SKIP"
-            skipBtn.Font = Enum.Font.GothamBold
-            skipBtn.TextSize = 16
-            skipBtn.Parent = introGui
-            
-            skipBtn.MouseButton1Click:Connect(function()
-                introGui:Destroy()
-            end)
-
-            videoFrame.Ended:Connect(function()
-                introGui:Destroy()
             end)
         end
     end
@@ -584,7 +530,7 @@ end
 function Fly.SetForce(v) Fly.Force = v end
 
 -- ============================================================
--- ENGINE
+-- ENGINE (VectorForce Implementation)
 -- ============================================================
 local Engine = {
     Enabled = false,
@@ -599,7 +545,7 @@ local Engine = {
         nitroRechargeTime = 20,
     },
     Speed = 60,
-    _hrp = nil, _eng = nil, _lv = nil, _att = nil,
+    _hrp = nil, _eng = nil, _vf = nil, _att = nil,
     _conn = nil, _charConn = nil,
 }
 
@@ -634,7 +580,7 @@ local function copyKartAttrs(eng)
 end
 
 local function destroyEngine()
-    if Engine._lv  then pcall(function() Engine._lv:Destroy()  end); Engine._lv  = nil end
+    if Engine._vf  then pcall(function() Engine._vf:Destroy()  end); Engine._vf  = nil end
     if Engine._att then pcall(function() Engine._att:Destroy() end); Engine._att = nil end
     if Engine._eng then pcall(function() Engine._eng:Destroy() end); Engine._eng = nil end
 end
@@ -654,16 +600,14 @@ local function bindEngine()
     att.Name = "EngineAttach"; att.Position = Vector3.new(0, 0, 0); att.Parent = hrp
     Engine._att = att
 
-    local lv = Instance.new("LinearVelocity")
-    lv.Name = "NitroVelocity"
-    lv.Attachment0 = att
-    lv.RelativeTo = Enum.ActuatorRelativeTo.World
-    
-    lv.MaxForce = math.huge
-    
-    lv.VectorVelocity = Vector3.new(0, 0, 0)
-    lv.Parent = eng
-    Engine._lv = lv
+    local vf = Instance.new("VectorForce")
+    vf.Name = "NitroForce"
+    vf.Attachment0 = att
+    vf.RelativeTo = Enum.ActuatorRelativeTo.World
+    vf.ApplyAtCenterOfMass = true
+    vf.Force = Vector3.new(0, 0, 0)
+    vf.Parent = eng
+    Engine._vf = vf
 
     for _, n in ipairs({ "WheelFLMotor", "WheelFRMotor", "WheelRLMotor", "WheelRRMotor" }) do
         local cc = Instance.new("CylindricalConstraint")
@@ -676,40 +620,48 @@ local function tickEngine(dt)
     if not Engine.Enabled then return end
     local hrp = Engine._hrp
     if not hrp or not hrp.Parent then bindEngine(); return end
-    if not Engine._lv then bindEngine(); return end
+    if not Engine._vf then bindEngine(); return end
 
     local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
 
     local maxSpeed = Engine.Speed
+    local mass = hrp.AssemblyMass
 
     local md = hum.MoveDirection
     local moving = md.Magnitude > 0.1
 
     local vel = hrp.AssemblyLinearVelocity
-    local horiz = Vector3.new(vel.X, 0, vel.Z).Magnitude
-    local currentY = vel.Y
+    local horizVel = Vector3.new(vel.X, 0, vel.Z)
+    local horizSpeed = horizVel.Magnitude
 
-    if moving and horiz < maxSpeed then
+    if moving then
         local dir = Vector3.new(md.X, 0, md.Z)
         if dir.Magnitude > 0.01 then
             dir = dir.Unit
-            -- Управляем только X и Z, оставляя Y как есть (гравитация работает)
-            Engine._lv.VectorVelocity = Vector3.new(dir.X * maxSpeed, currentY, dir.Z * maxSpeed)
+            local targetVel = dir * maxSpeed
             
+            if horizSpeed < maxSpeed then
+                local forceX = (targetVel.X - vel.X) * mass * 50
+                local forceZ = (targetVel.Z - vel.Z) * mass * 50
+                Engine._vf.Force = Vector3.new(forceX, 0, forceZ)
+            else
+                Engine._vf.Force = Vector3.new(0, 0, 0)
+            end
+
             if Engine._eng then
                 Engine._eng:SetAttribute("_isAccelerating", true)
                 Engine._eng:SetAttribute("_nitroEnabled", true)
-                Engine._eng:SetAttribute("_speed", horiz)
-                Engine._eng:SetAttribute("_chassisSpeed", horiz)
+                Engine._eng:SetAttribute("_speed", horizSpeed)
+                Engine._eng:SetAttribute("_chassisSpeed", horizSpeed)
             end
         end
     else
-        Engine._lv.VectorVelocity = Vector3.new(0, currentY, 0)
+        Engine._vf.Force = Vector3.new(0, 0, 0)
         if Engine._eng then
             Engine._eng:SetAttribute("_isAccelerating", false)
-            Engine._eng:SetAttribute("_speed", horiz)
-            Engine._eng:SetAttribute("_chassisSpeed", horiz)
+            Engine._eng:SetAttribute("_speed", horizSpeed)
+            Engine._eng:SetAttribute("_chassisSpeed", horizSpeed)
         end
     end
 end
