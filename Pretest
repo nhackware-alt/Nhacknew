@@ -1,33 +1,497 @@
 -- ============================================================
--- NHACKWARE INTRO (AUDIO ONLY)
+-- НАСТРОЙКИ ВЕРСИИ
 -- ============================================================
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local Workspace = game:GetService("Workspace")
+local SCRIPT_VERSION = "4.0"
 
+-- ============================================================
+-- NHACKWARE INTRO (VISUAL + AUDIO)
+-- ============================================================
+local isIntroDone = false
 task.spawn(function()
-    local githubAudioUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/start.mp3"
-    local localFileName = "nhackware_start.mp3"
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Lighting = game:GetService("Lighting")
+    local StarterGui = game:GetService("StarterGui")
+    local ReplicatedFirst = game:GetService("ReplicatedFirst")
+    local ContentProvider = game:GetService("ContentProvider")
 
-    local success, fileData = pcall(function()
-        return game:HttpGet(githubAudioUrl)
+    -- 1. ЗАПУСК АУДИО
+    task.spawn(function()
+        local githubAudioUrl = "https://github.com/nhackware-alt/Nhackware_audios/raw/refs/heads/main/start.mp3"
+        local localFileName = "nhackware_start.mp3"
+        local success, fileData = pcall(function() return game:HttpGet(githubAudioUrl) end)
+        if success and fileData then
+            pcall(writefile, localFileName, fileData)
+            local assetSuccess, customAssetId = pcall(function() return getcustomasset(localFileName) end)
+            if assetSuccess and customAssetId and customAssetId ~= "" then
+                local sound = Instance.new("Sound")
+                sound.SoundId = customAssetId
+                sound.Volume = 1
+                sound.Parent = workspace
+                pcall(function() sound:Play() end)
+                sound.Ended:Connect(function() sound:Destroy() end)
+            end
+        end
     end)
 
-    if success and fileData then
-        pcall(writefile, localFileName, fileData)
-        local assetSuccess, customAssetId = pcall(function()
-            return getcustomasset(localFileName)
+    -- 2. ВИЗУАЛЬНОЕ ИНТРО
+    local CONFIG = {
+        BackgroundColor = Color3.fromRGB(255, 255, 255),
+        LogoColor = Color3.fromRGB(0, 0, 0),
+        LetterSize = 86, WareSize = 38, LogoYOffset = 0, CustomFont = nil,
+        WorldBlur = 24, BlurSamples = 19, HideCoreGui = true,
+        WaitForGameLoad = true, MaxExtraWait = 8,
+    }
+    local T = {
+        LetterStart = 0.02, LetterStep = 0.07, LetterTime = 0.32,
+        WareStart = 1.22, WareTime = 0.48, HoldUntil = 2.30,
+        WareOutTime = 0.22, LogoOutDelay = 0.20, LogoOutTime = 0.70,
+        BgOutDelay = 0.35, BgOutTime = 0.90,
+    }
+    local BLUR_IN = 9
+    local BLUR_OUT = 14
+    local DESIGN_W, DESIGN_H = 512, 288
+    local LETTERS = { { "N", -102.2 }, { "H", -49.0 }, { "A", 3.4 }, { "C", 51.8 }, { "K", 101.6 } }
+    local LETTER_Y = -16.6
+    local WARE_X, WARE_Y = -8.4, 40
+
+    local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
+    local playerGui = player:WaitForChild("PlayerGui")
+
+    if playerGui:FindFirstChild("NhackwareIntro") then 
+        isIntroDone = true
+        return 
+    end
+
+    local FONT
+    if CONFIG.CustomFont then
+        FONT = CONFIG.CustomFont
+    else
+        local ok, f = pcall(function()
+            local base = Font.fromEnum(Enum.Font.Oswald)
+            return Font.new(base.Family, Enum.FontWeight.Bold, Enum.FontStyle.Normal)
         end)
-        if assetSuccess and customAssetId then
-            local sound = Instance.new("Sound")
-            sound.SoundId = customAssetId
-            sound.Volume = 1
-            sound.Parent = LocalPlayer.Character or Workspace
-            sound:Play()
-            sound.Ended:Connect(function()
-                sound:Destroy()
-            end)
+        FONT = ok and f or Font.fromEnum(Enum.Font.GothamBlack)
+    end
+
+    local SAMPLES = math.max(CONFIG.BlurSamples, 2)
+    local OFFSETS = {}
+    for i = 0, SAMPLES - 1 do
+        local r = (i == 0) and 0 or math.sqrt(i / (SAMPLES - 1))
+        local a = i * 2.399963
+        OFFSETS[i + 1] = Vector2.new(math.cos(a) * r, math.sin(a) * r)
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "NhackwareIntro"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 10000
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pcall(function() gui.ScreenInsets = Enum.ScreenInsets.None end)
+    pcall(function() gui.ClipToDeviceSafeArea = false end)
+
+    local bg = Instance.new("Frame")
+    bg.Name = "Background"
+    bg.BackgroundColor3 = CONFIG.BackgroundColor
+    bg.BackgroundTransparency = 0
+    bg.BorderSizePixel = 0
+    bg.Active = true
+    bg.Position = UDim2.fromOffset(-1, -1)
+    bg.Size = UDim2.new(1, 2, 1, 2)
+    bg.ZIndex = 1
+    bg.Parent = gui
+
+    local stage = Instance.new("Frame")
+    stage.Name = "Stage"
+    stage.BackgroundTransparency = 1
+    stage.BorderSizePixel = 0
+    stage.AnchorPoint = Vector2.new(0.5, 0.5)
+    stage.Position = UDim2.fromScale(0.5, 0.5)
+    stage.Size = UDim2.fromOffset(DESIGN_W, DESIGN_H)
+    stage.ZIndex = 2
+    stage.Parent = gui
+
+    local uiScale = Instance.new("UIScale")
+    uiScale.Parent = stage
+
+    local function updateScale()
+        local s = gui.AbsoluteSize
+        if s.X <= 0 or s.Y <= 0 then
+            local cam = workspace.CurrentCamera
+            s = cam and cam.ViewportSize or Vector2.new(DESIGN_W, DESIGN_H)
+        end
+        uiScale.Scale = math.min(s.X / DESIGN_W, s.Y / DESIGN_H)
+    end
+    gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateScale)
+    updateScale()
+
+    local Unit = {}
+    Unit.__index = Unit
+
+    function Unit.new(text, textSize, cx, cy)
+        local self = setmetatable({}, Unit)
+        self.cx, self.cy = cx, cy
+        self.base = UDim2.fromOffset(cx, cy)
+        self.labels = {}
+        self.alpha, self.blur, self.shown = -1, -1, -1
+
+        for i = 1, SAMPLES do
+            local l = Instance.new("TextLabel")
+            l.Name = text .. i
+            l.AnchorPoint = Vector2.new(0.5, 0.5)
+            l.Position = self.base
+            l.Size = UDim2.fromOffset(180, 140)
+            l.BackgroundTransparency = 1
+            l.BorderSizePixel = 0
+            l.Text = text
+            l.FontFace = FONT
+            l.TextSize = textSize
+            l.TextColor3 = CONFIG.LogoColor
+            l.TextWrapped = false
+            l.TextXAlignment = Enum.TextXAlignment.Center
+            l.TextYAlignment = Enum.TextYAlignment.Center
+            l.TextTransparency = 1
+            l.Visible = false
+            l.ZIndex = 2
+            l.Parent = stage
+            self.labels[i] = l
+        end
+        return self
+    end
+
+    function Unit:set(alpha, blur)
+        if alpha == self.alpha and blur == self.blur then return end
+        self.alpha, self.blur = alpha, blur
+        local labels = self.labels
+        if alpha <= 0.003 then
+            if self.shown ~= 0 then
+                for _, l in ipairs(labels) do l.Visible = false end
+                self.shown = 0
+            end
+            return
+        end
+        if blur < 0.25 then
+            local l = labels[1]
+            l.Position = self.base
+            l.TextTransparency = 1 - alpha
+            l.Visible = true
+            if self.shown ~= 1 then
+                for i = 2, #labels do labels[i].Visible = false end
+                self.shown = 1
+            end
+        else
+            local a = math.min(alpha, 0.97)
+            local layerAlpha = 1 - (1 - a) ^ (1 / #labels)
+            local tr = 1 - layerAlpha
+            for i, l in ipairs(labels) do
+                local o = OFFSETS[i]
+                l.Position = UDim2.fromOffset(self.cx + o.X * blur, self.cy + o.Y * blur)
+                l.TextTransparency = tr
+                l.Visible = true
+            end
+            self.shown = #labels
         end
     end
+
+    local cx0 = DESIGN_W / 2
+    local cy0 = DESIGN_H / 2 + CONFIG.LogoYOffset
+
+    local letters = {}
+    for i, data in ipairs(LETTERS) do
+        letters[i] = Unit.new(data[1], CONFIG.LetterSize, cx0 + data[2], cy0 + LETTER_Y)
+    end
+    local ware = Unit.new("ware", CONFIG.WareSize, cx0 + WARE_X, cy0 + WARE_Y)
+
+    local worldBlur = Instance.new("BlurEffect")
+    worldBlur.Name = "NhackwareIntroBlur"
+    worldBlur.Size = CONFIG.WorldBlur
+    worldBlur.Parent = Lighting
+
+    gui.Parent = playerGui
+
+    pcall(function() ReplicatedFirst:RemoveDefaultLoadingScreen() end)
+
+    local savedCore = {}
+    if CONFIG.HideCoreGui then
+        for _, item in ipairs(Enum.CoreGuiType:GetEnumItems()) do
+            if item ~= Enum.CoreGuiType.All then
+                local ok, enabled = pcall(StarterGui.GetCoreGuiEnabled, StarterGui, item)
+                if ok then savedCore[item] = enabled end
+            end
+        end
+        task.spawn(function()
+            for _ = 1, 20 do
+                if pcall(StarterGui.SetCoreGuiEnabled, StarterGui, Enum.CoreGuiType.All, false) then return end
+                task.wait(0.1)
+            end
+        end)
+    end
+
+    local function restoreCoreGui()
+        for item, enabled in pairs(savedCore) do
+            pcall(StarterGui.SetCoreGuiEnabled, StarterGui, item, enabled)
+        end
+    end
+
+    do
+        local done = false
+        task.spawn(function()
+            pcall(function() ContentProvider:PreloadAsync({ letters[1].labels[1], ware.labels[1] }) end)
+            done = true
+        end)
+        local waited = 0
+        while not done and waited < 2 do waited += task.wait() end
+    end
+
+    local function clamp01(x) return math.clamp(x, 0, 1) end
+    local function easeInOut(p)
+        if p < 0.5 then return 2 * p * p end
+        return 1 - ((-2 * p + 2) ^ 2) / 2
+    end
+
+    local t = 0
+    local outT = nil
+    local conn
+
+    local function finish()
+        if conn then conn:Disconnect(); conn = nil end
+        if gui then gui:Destroy() end
+        if worldBlur then worldBlur:Destroy() end
+        restoreCoreGui()
+        isIntroDone = true
+    end
+
+    conn = RunService.RenderStepped:Connect(function(dt)
+        dt = math.min(dt, 0.05)
+        t += dt
+        updateScale()
+
+        if not outT and t >= T.HoldUntil then
+            if not CONFIG.WaitForGameLoad or game:IsLoaded() or t >= T.HoldUntil + CONFIG.MaxExtraWait then
+                outT = 0
+            end
+        elseif outT then
+            outT += dt
+        end
+
+        local logoQ = 0
+        if outT then logoQ = easeInOut(clamp01((outT - T.LogoOutDelay) / T.LogoOutTime)) end
+        for i, unit in ipairs(letters) do
+            local p = clamp01((t - (T.LetterStart + (i - 1) * T.LetterStep)) / T.LetterTime)
+            local a = 1 - (1 - p) ^ 1.7
+            local b = BLUR_IN * (1 - p) ^ 2
+            if outT then
+                a = a * (1 - logoQ)
+                b = b + BLUR_OUT * logoQ
+            end
+            unit:set(a, b)
+        end
+
+        do
+            local p = clamp01((t - T.WareStart) / T.WareTime)
+            local a = 1 - (1 - p) ^ 2.2
+            local b = 0
+            if outT then
+                local q = easeInOut(clamp01(outT / T.WareOutTime))
+                a = a * (1 - q)
+                b = BLUR_OUT * 0.5 * q
+            end
+            ware:set(a, b)
+        end
+
+        if outT then
+            local q = easeInOut(clamp01((outT - T.BgOutDelay) / T.BgOutTime))
+            bg.BackgroundTransparency = q
+            worldBlur.Size = CONFIG.WorldBlur * (1 - q)
+            if outT >= T.BgOutDelay + T.BgOutTime and outT >= T.LogoOutDelay + T.LogoOutTime then
+                finish()
+            end
+        end
+    end)
+end)
+
+-- Ждем окончания интро перед загрузкой UI
+repeat task.wait() until isIntroDone
+
+-- ============================================================
+-- NHACKWARE WATERMARK
+-- ============================================================
+local ACCENT  = Color3.fromRGB(140, 110, 255)
+
+local function getWatermarkParent()
+	local ok, hui = pcall(function() return gethui and gethui() end)
+	if ok and hui then return hui end
+	local ok2, core = pcall(function() return game:GetService("CoreGui") end)
+	if ok2 and core then
+		local t = Instance.new("ScreenGui")
+		local ok3 = pcall(function() t.Parent = core end)
+		t:Destroy()
+		if ok3 then return core end
+	end
+	return game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local parent = getWatermarkParent()
+local old = parent:FindFirstChild("NHackWareWatermark")
+if old then old:Destroy() end
+
+local wmGui = Instance.new("ScreenGui")
+wmGui.Name = "NHackWareWatermark"
+wmGui.ResetOnSpawn = false
+wmGui.IgnoreGuiInset = true
+wmGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+wmGui.DisplayOrder = 999
+wmGui.Parent = parent
+
+local frame = Instance.new("Frame")
+frame.Name = "Glass"
+frame.AnchorPoint = Vector2.new(0.5, 0)
+frame.Position = UDim2.new(0.5, 0, 0, 12)
+frame.Size = UDim2.new(0, 0, 0, 34)
+frame.AutomaticSize = Enum.AutomaticSize.X
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+frame.BackgroundTransparency = 0.4
+frame.BorderSizePixel = 0
+frame.Parent = wmGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 16)
+corner.Parent = frame
+
+local bgGrad = Instance.new("UIGradient")
+bgGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(70, 70, 95)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 15, 22)),
+})
+bgGrad.Rotation = 90
+bgGrad.Parent = frame
+
+local stroke = Instance.new("UIStroke")
+stroke.Thickness = 1
+stroke.Color = Color3.fromRGB(255, 255, 255)
+stroke.Transparency = 0.6
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+stroke.Parent = frame
+
+local strokeGrad = Instance.new("UIGradient")
+strokeGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0),
+	NumberSequenceKeypoint.new(0.5, 0.8),
+	NumberSequenceKeypoint.new(1, 0.4),
+})
+strokeGrad.Rotation = 90
+strokeGrad.Parent = stroke
+
+local pad = Instance.new("UIPadding")
+pad.PaddingLeft = UDim.new(0, 16)
+pad.PaddingRight = UDim.new(0, 16)
+pad.Parent = frame
+
+local topShine = Instance.new("Frame")
+topShine.Name = "TopShine"
+topShine.AnchorPoint = Vector2.new(0.5, 0)
+topShine.Position = UDim2.new(0.5, 0, 0, 0)
+topShine.Size = UDim2.new(1, 0, 0.55, 0)
+topShine.BackgroundColor3 = Color3.new(1, 1, 1)
+topShine.BorderSizePixel = 0
+topShine.ZIndex = 2
+topShine.Parent = frame
+
+local topCorner = Instance.new("UICorner")
+topCorner.CornerRadius = UDim.new(0, 16)
+topCorner.Parent = topShine
+
+local topGrad = Instance.new("UIGradient")
+topGrad.Rotation = 90
+topGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.82),
+	NumberSequenceKeypoint.new(1, 1),
+})
+topGrad.Parent = topShine
+
+local sheen = Instance.new("Frame")
+sheen.Name = "Sheen"
+sheen.Size = UDim2.new(1, 0, 1, 0)
+sheen.BackgroundColor3 = Color3.new(1, 1, 1)
+sheen.BorderSizePixel = 0
+sheen.ZIndex = 2
+sheen.Parent = frame
+
+local sheenCorner = Instance.new("UICorner")
+sheenCorner.CornerRadius = UDim.new(0, 16)
+sheenCorner.Parent = sheen
+
+local sheenGrad = Instance.new("UIGradient")
+sheenGrad.Rotation = 25
+sheenGrad.Offset = Vector2.new(-1, 0)
+sheenGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.4, 1),
+	NumberSequenceKeypoint.new(0.5, 0.8),
+	NumberSequenceKeypoint.new(0.6, 1),
+	NumberSequenceKeypoint.new(1, 1),
+})
+sheenGrad.Parent = sheen
+
+task.spawn(function()
+	while wmGui.Parent do
+		sheenGrad.Offset = Vector2.new(-1, 0)
+		local tw = game:GetService("TweenService"):Create(
+			sheenGrad,
+			TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+			{ Offset = Vector2.new(1, 0) }
+		)
+		tw:Play()
+		tw.Completed:Wait()
+		task.wait(3.5)
+	end
+end)
+
+local label = Instance.new("TextLabel")
+label.Name = "Info"
+label.BackgroundTransparency = 1
+label.Size = UDim2.new(0, 0, 1, 0)
+label.AutomaticSize = Enum.AutomaticSize.X
+label.Font = Enum.Font.GothamMedium
+label.TextSize = 14
+label.TextColor3 = Color3.fromRGB(245, 245, 255)
+label.RichText = true
+label.TextXAlignment = Enum.TextXAlignment.Center
+label.ZIndex = 3
+label.Parent = frame
+
+local accentHex = string.format(
+	"rgb(%d,%d,%d)",
+	ACCENT.R * 255, ACCENT.G * 255, ACCENT.B * 255
+)
+
+local function setWatermarkText(ping, fps)
+	label.Text = string.format(
+		"NHackWare <font color='%s'>v%s</font>  <font transparency='0.6'>|</font>  %d ms  <font transparency='0.6'>|</font>  %d fps",
+		accentHex, SCRIPT_VERSION, ping, fps
+	)
+end
+setWatermarkText(0, 0)
+
+local frames, elapsed, fps = 0, 0, 60
+local Stats = game:GetService("Stats")
+
+local function getPing()
+	local ok, value = pcall(function()
+		return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+	end)
+	return ok and math.floor(value + 0.5) or 0
+end
+
+game:GetService("RunService").RenderStepped:Connect(function(dt)
+	frames += 1
+	elapsed += dt
+	if elapsed >= 0.5 then
+		fps = math.floor(frames / elapsed + 0.5)
+		frames, elapsed = 0, 0
+		setWatermarkText(getPing(), fps)
+	end
 end)
 
 -- ============================================================
@@ -38,7 +502,7 @@ local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/d
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 local Window = Fluent:CreateWindow({
-    Title = "NhackWare v0.5",
+    Title = "NhackWare v" .. SCRIPT_VERSION,
     SubTitle = "GRG",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
@@ -87,6 +551,7 @@ end
 -- ============================================================
 local consoleDesc = Tabs.Console:AddParagraph({ Title = "F9 Logs", Content = "" })
 local logHistory = {}
+local updatePending = false
 
 LogService.MessageOut:Connect(function(message, messageType)
     local prefix = "[INFO] "
@@ -101,10 +566,24 @@ LogService.MessageOut:Connect(function(message, messageType)
         table.remove(logHistory, 1)
     end
     
-    pcall(function()
-        consoleDesc:SetDesc(table.concat(logHistory, "\n"))
-    end)
+    if not updatePending then
+        updatePending = true
+        task.delay(0.5, function()
+            if consoleDesc then
+                pcall(function() consoleDesc:SetDesc(table.concat(logHistory, "\n")) end)
+            end
+            updatePending = false
+        end)
+    end
 end)
+
+Tabs.Console:AddButton({
+    Title = "Clear Console",
+    Callback = function()
+        table.clear(logHistory)
+        pcall(function() consoleDesc:SetDesc("") end)
+    end
+})
 
 -- ============================================================
 -- ESP CORE
@@ -1560,7 +2039,7 @@ end
 -- MAIN TAB
 -- ============================================================
 Tabs.Main:AddParagraph({
-    Title = "NhackWare v0.5",
+    Title = "NhackWare v" .. SCRIPT_VERSION,
     Content = "GRG client."
 })
 
@@ -1650,8 +2129,12 @@ local TpDropdown = Tabs.Rage:AddDropdown("TpTargetDropdown", {
 
 local function updateDropdown()
     local newList = getPlayerList()
-    if TpDropdown and TpDropdown.SetValues then
-        pcall(function() TpDropdown:SetValues(newList) end)
+    if TpDropdown then
+        if TpDropdown.SetValues then
+            pcall(function() TpDropdown:SetValues(newList) end)
+        elseif TpDropdown.Refresh then
+            pcall(function() TpDropdown:Refresh(newList, true) end)
+        end
     end
     if tpTargetPlayer and not table.find(newList, tpTargetPlayer) then
         tpTargetPlayer = nil
@@ -1908,9 +2391,9 @@ Tabs.Settings:AddButton({
 })
 
 Fluent:Notify({
-    Title = "NhackWare v0.5",
+    Title = "NhackWare v" .. SCRIPT_VERSION,
     Content = "Загружено. RightShift — свернуть окно.",
     Duration = 6
 })
 
-LOG("Loaded v0.5.")
+LOG("Loaded v" .. SCRIPT_VERSION .. ".")
