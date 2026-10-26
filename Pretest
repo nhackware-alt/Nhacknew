@@ -497,7 +497,7 @@ end)
 -- ============================================================
 -- UI INIT
 -- ============================================================
-local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/nhackware-alt/Nhacknew/refs/heads/main/NH_simple_mod_ui"))()
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/download/1.1.0/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
