@@ -1,0 +1,1373 @@
+--[[
+Rice Farm v4.0 by NhackWare
+- Full cfg GUI (offsets, timings, eat, ragdoll)
+- Profit meter: rice/sec, rice/min, $`/h with ping
+- Ragdoll save: lift kart on RagdollEvent(true), restore on false
+- Eat logic with proper seat wait, intentional exit detection
+- Presets: Fast / Safe / Balanced
+- Config save/load via writefile (if executor supports)
+]]
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local CONFIG = {
+-- Kart offsets
+OFFSET_X = 0,
+OFFSET_Y = -2,
+OFFSET_Z = 3,
+
+-- Timings (seconds)
+STEP_DELAY = 0.15,
+POST_CUT_WAIT = 0.15,
+NO_RICE_WAIT = 0.3,
+CHECK_INTERVAL = 2.3,
+MAIN_LOOP_DELAY = 0.02,
+
+-- Eat
+FOOD_MODE = "auto",
+HUNGER_MIN = 10,
+HUNGER_MAX = 90,
+EAT_MAX_ATTEMPTS = 200,
+EAT_WAIT_SHORT = 0.3,
+EAT_WAIT_MED = 1.0,
+EAT_WAIT_LONG = 2.0,
+EAT_FAIL_THRESHOLD_MED = 3,
+EAT_FAIL_THRESHOLD_LONG = 10,
+EAT_TOOL_TIMEOUT = 6.0,
+EAT_SEAT_TIMEOUT = 1.5,
+INTENTIONAL_EXIT_TIME = 4.0,
+
+-- Ragdoll save
+RAGDOLL_SAVE = true,
+RAGDOLL_LIFT = 100,
+RAGDOLL_RESTORE_DELAY = 1.0,
+RAGDOLL_RETRY = 0.15,
+
+-- Profit
+RICE_PRICE = 5,
+PING_FALLBACK = 0.1,
+}
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
+local Stats = game:GetService("Stats")
+local RunService = game:GetService("RunService")
+
+local Player = Players.LocalPlayer
+local PlayerName = Player.Name
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local State = {
+Enabled = false,
+Paused = false,
+RiceCount = 0,
+Error = nil,
+KartStatus = "не найден",
+EatStatus = "",
+EatAttempts = 0,
+LastRice = nil,
+RiceFolder = nil,
+IntentionalExit = false,
+IntentionalExitTime = 0,
+SessionStart = tick(),
+}
+
+local RagdollState = {
+Active = false,
+Count = 0,
+BodyPosition = nil,
+MonitorThread = nil,
+OriginalCFrame = nil,
+}
+
+-- ============================================================
+-- PROFIT METER
+-- ============================================================
+local Profit = {
+Sample = {}, -- timestamps of successful cuts
+WindowSize = 30, -- seconds window for rate calc
+}
+
+local function GetPing()
+local ok, value = pcall(function()
+return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+end)
+if ok and value and value > 0 then return value end
+return CONFIG.PING_FALLBACK
+end
+
+local function RecordCut()
+table.insert(Profit.Sample, tick())
+-- prune old
+local cutoff = tick() - Profit.WindowSize
+while #Profit.Sample > 0 and Profit.Sample[1] < cutoff do
+table.remove(Profit.Sample, 1)
+end
+end
+
+local function GetRates()
+local n = #Profit.Sample
+local ping = GetPing()
+local cycle = CONFIG.STEP_DELAY + CONFIG.POST_CUT_WAIT + CONFIG.MAIN_LOOP_DELAY + ping
+
+-- rate from samples
+local ratePerSec, ratePerMin, perHour
+if n >= 2 then
+local span = Profit.Sample[n] - Profit.Sample[1]
+if span > 0 then
+ratePerSec = (n - 1) / span
+else
+ratePerSec = 0
+end
+else
+-- nominal from cycle
+ratePerSec = cycle > 0 and (1 / cycle) or 0
+end
+
+ratePerMin = ratePerSec * 60
+perHour = ratePerSec * 3600 * CONFIG.RICE_PRICE
+
+return {
+cycle = cycle,
+ping = ping,
+ratePerSec = ratePerSec,
+ratePerMin = ratePerMin,
+perHour = perHour,
+samples = n,
+}
+end
+
+-- ============================================================
+-- ANTI-AFK
+-- ============================================================
+Player.Idled:Connect(function()
+if not State.Enabled then return end
+local cam = Workspace.CurrentCamera
+for _ = 1, math.random(2, 4) do
+VirtualUser:Button2Down(Vector2.new(0, 0), cam.CFrame)
+task.wait(math.random(80, 200) / 1000)
+VirtualUser:Button2Up(Vector2.new(0, 0), cam.CFrame)
+task.wait(math.random(100, 400) / 1000)
+end
+end)
+
+-- ============================================================
+-- GET TOOL
+-- ============================================================
+local function GetTool(name)
+local ch = Player.Character
+if not ch then return nil end
+local hum = ch:FindFirstChildOfClass("Humanoid")
+if not hum then return nil end
+local tool = ch:FindFirstChild(name) or Player.Backpack:FindFirstChild(name)
+if tool and tool:IsA("Tool") then
+if tool.Parent ~= ch then
+pcall(function() hum:EquipTool(tool) end)
+end
+return tool
+end
+return nil
+end
+
+-- ============================================================
+-- SEAT HELPERS
+-- ============================================================
+local function IsSeatedAt(hum, seat)
+return seat and seat.Occupant == hum
+end
+
+local function SitAndWait(hum, seat, timeout)
+local ch = hum.Parent
+local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+if not hrp then return false end
+
+if hum.Sit then
+hum.Sit = false
+local t0 = tick()
+while hum.Sit and tick() - t0 < 0.5 do task.wait(0.05) end
+end
+
+hrp.CFrame = seat.CFrame * CFrame.new(0, 3, 0)
+task.wait(0.1)
+
+pcall(function() seat:Sit(hum) end)
+
+local t0 = tick()
+while tick() - t0 < timeout do
+if IsSeatedAt(hum, seat) then return true end
+task.wait(0.05)
+end
+return false
+end
+
+local function WaitForTool(names, ch, timeout)
+local t0 = tick()
+while tick() - t0 < timeout do
+for _, name in ipairs(names) do
+local t = Player.Backpack:FindFirstChild(name) or ch:FindFirstChild(name)
+if t and t:IsA("Tool") then return t end
+end
+task.wait(0.1)
+end
+return nil
+end
+
+-- ============================================================
+-- AUTO EAT - RICE
+-- ============================================================
+local function AutoEatRice(forceBasic)
+local ch = Player.Character
+if not ch then return false end
+local hum = ch:FindFirstChildOfClass("Humanoid")
+if not hum or hum.Health <= 0 then return false end
+
+local names = forceBasic and {"Basic Food"} or {"Best Food", "Good Food", "Basic Food"}
+local tool = nil
+for _, name in ipairs(names) do
+local t = Player.Backpack:FindFirstChild(name) or ch:FindFirstChild(name)
+if t and t:IsA("Tool") then tool = t break end
+end
+
+if not tool then
+local Stores = Workspace:FindFirstChild("Stores")
+local Food = Stores and Stores:FindFirstChild("Food")
+local Seats = Food and Food:FindFirstChild("CustomerSeats")
+if not Seats then return false end
+
+local priority = forceBasic and {"1"} or {"1", "2", "3"}
+local seated = false
+for _, seatName in ipairs(priority) do
+local seat = Seats:FindFirstChild(seatName)
+if seat and seat:IsA("Seat") then
+if SitAndWait(hum, seat, CONFIG.EAT_SEAT_TIMEOUT) then
+seated = true
+break
+end
+end
+end
+if not seated then return false end
+
+tool = WaitForTool(names, ch, CONFIG.EAT_TOOL_TIMEOUT)
+if not tool then return false end
+end
+
+pcall(function() hum:EquipTool(tool) end)
+task.wait(0.05)
+local ok = pcall(function() tool:Activate() end)
+task.wait(0.4)
+
+-- free the seat
+local seatPart = hum.SeatPart
+if seatPart and seatPart:IsA("Seat") then
+pcall(function() seatPart:Sit(nil) end)
+end
+
+return ok
+end
+
+-- ============================================================
+-- AUTO EAT - POPCORN
+-- ============================================================
+local function AutoEatPopcorn()
+local ch = Player.Character
+if not ch then return false end
+local hum = ch:FindFirstChildOfClass("Humanoid")
+if not hum or hum.Health <= 0 then return false end
+
+local tool = Player.Backpack:FindFirstChild("Popcorn") or ch:FindFirstChild("Popcorn")
+
+if not tool then
+local BS = Workspace:FindFirstChild("BarbStores")
+local Pop = BS and BS:FindFirstChild("Popcorn")
+local Seat = Pop and Pop:FindFirstChild("CustomerSeat")
+if not Seat then return false end
+
+if not IsSeatedAt(hum, Seat) then
+if not SitAndWait(hum, Seat, CONFIG.EAT_SEAT_TIMEOUT) then
+return false
+end
+end
+
+tool = WaitForTool({"Popcorn"}, ch, CONFIG.EAT_TOOL_TIMEOUT)
+if not tool then return false end
+end
+
+pcall(function() hum:EquipTool(tool) end)
+task.wait(0.05)
+local ok = pcall(function() tool:Activate() end)
+task.wait(0.25)
+
+local seatPart = hum.SeatPart
+if seatPart and seatPart:IsA("Seat") then
+pcall(function() seatPart:Sit(nil) end)
+end
+
+return ok
+end
+
+-- ============================================================
+-- AUTO EAT ROUTER
+-- ============================================================
+local function AutoEat()
+local mode = CONFIG.FOOD_MODE
+if mode == "popcorn" then
+return AutoEatPopcorn()
+elseif mode == "rice" then
+return AutoEatRice(false)
+else
+local ok = AutoEatRice(true)
+if ok then return true end
+return AutoEatPopcorn()
+end
+end
+
+-- ============================================================
+-- GET RICE
+-- ============================================================
+local function GetRice()
+if not State.RiceFolder then
+State.RiceFolder = Workspace:FindFirstChild("Rice")
+end
+if not State.RiceFolder then return nil end
+
+local Karts = Workspace:FindFirstChild("Karts")
+local kart = Karts and Karts:FindFirstChild(PlayerName)
+local kartPos = kart and kart.PrimaryPart and kart.PrimaryPart.Position
+if not kartPos then return nil end
+
+local live = {}
+for _, rice in ipairs(State.RiceFolder:GetChildren()) do
+if rice:IsA("Model") then
+local hp = rice:GetAttribute("Health")
+local rw = rice:GetAttribute("Reward")
+local pp = rice.PrimaryPart
+if hp and hp > 0 and rw and rw > 0 and pp then
+table.insert(live, {
+rice = rice,
+pp = pp,
+dist = (pp.Position - kartPos).Magnitude,
+})
+end
+end
+end
+
+if #live == 0 then return nil end
+table.sort(live, function(a, b) return a.dist < b.dist end)
+
+for _, entry in ipairs(live) do
+if entry.rice ~= State.LastRice then
+State.LastRice = entry.rice
+return entry.rice, entry.pp
+end
+end
+
+State.LastRice = live[1].rice
+return live[1].rice, live[1].pp
+end
+
+-- ============================================================
+-- USE KART
+-- ============================================================
+local function UseKart(kart)
+if kart.Name ~= PlayerName then return end
+
+local seat = kart:FindFirstChildOfClass("VehicleSeat")
+if not seat then return end
+local kartRoot = kart.PrimaryPart
+if not kartRoot then return end
+
+while kart.Parent and State.Enabled and not State.Paused do
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+if not hum or hum.Health <= 0 then break end
+
+if seat.Occupant ~= hum then
+pcall(function() seat:Sit(hum) end)
+end
+
+local rice, part = GetRice()
+if rice and part then
+local hpBefore = rice:GetAttribute("Health") or 0
+
+pcall(function()
+kartRoot.AssemblyLinearVelocity = Vector3.zero
+kartRoot.AssemblyAngularVelocity = Vector3.zero
+kart:PivotTo(part.CFrame * CFrame.new(CONFIG.OFFSET_X, CONFIG.OFFSET_Y, CONFIG.OFFSET_Z))
+kartRoot.AssemblyLinearVelocity = Vector3.zero
+kartRoot.AssemblyAngularVelocity = Vector3.zero
+end)
+
+task.wait(CONFIG.STEP_DELAY)
+
+local hpAfter = rice:GetAttribute("Health") or 0
+if hpAfter < hpBefore then
+State.RiceCount = State.RiceCount + 1
+RecordCut()
+else
+task.wait(CONFIG.POST_CUT_WAIT)
+pcall(function()
+kart:PivotTo(part.CFrame * CFrame.new(CONFIG.OFFSET_X, CONFIG.OFFSET_Y, CONFIG.OFFSET_Z))
+end)
+task.wait(0.1)
+end
+
+State.LastRice = rice
+else
+task.wait(CONFIG.NO_RICE_WAIT)
+end
+
+task.wait(CONFIG.MAIN_LOOP_DELAY)
+end
+end
+
+-- ============================================================
+-- RAGDOLL SAVE
+-- ============================================================
+local function GetKart()
+local Karts = Workspace:FindFirstChild("Karts")
+return Karts and Karts:FindFirstChild(PlayerName)
+end
+
+local function IsOnFoodSeat()
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+if not hum then return false end
+local seat = hum.SeatPart
+if not seat then return false end
+return not seat:IsA("VehicleSeat")
+end
+
+local function LiftKart()
+local kart = GetKart()
+if not kart or not kart.PrimaryPart then return end
+
+local root = kart.PrimaryPart
+RagdollState.OriginalCFrame = root.CFrame
+
+if RagdollState.BodyPosition then
+RagdollState.BodyPosition:Destroy()
+end
+
+local bp = Instance.new("BodyPosition")
+bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+bp.P = 50000
+bp.D = 1000
+bp.Position = root.Position + Vector3.new(0, CONFIG.RAGDOLL_LIFT, 0)
+bp.Parent = root
+RagdollState.BodyPosition = bp
+
+-- try to keep player seated
+if RagdollState.MonitorThread then
+task.cancel(RagdollState.MonitorThread)
+RagdollState.MonitorThread = nil
+end
+
+RagdollState.MonitorThread = task.spawn(function()
+while RagdollState.Count > 0 and State.Enabled do
+local k = GetKart()
+if not k or not k.Parent then break end
+local s = k:FindFirstChildOfClass("VehicleSeat")
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+if s and hum and hum.Health > 0 and s.Occupant ~= hum then
+local hrp = ch:FindFirstChild("HumanoidRootPart")
+if hrp then hrp.CFrame = s.CFrame * CFrame.new(0, 3, 0) end
+pcall(function() s:Sit(hum) end)
+end
+task.wait(CONFIG.RAGDOLL_RETRY)
+end
+RagdollState.MonitorThread = nil
+end)
+end
+
+local function DropKart()
+if RagdollState.BodyPosition then
+RagdollState.BodyPosition:Destroy()
+RagdollState.BodyPosition = nil
+end
+if RagdollState.MonitorThread then
+task.cancel(RagdollState.MonitorThread)
+RagdollState.MonitorThread = nil
+end
+end
+
+local function HookRagdoll()
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+local ev = Remotes and Remotes:WaitForChild("RagdollEvent", 10)
+if not ev then return end
+
+pcall(function()
+ev.OnClientEvent:Connect(function(rstate)
+if not CONFIG.RAGDOLL_SAVE or not State.Enabled then return end
+
+-- intentional exit (eating) — ignore
+if rstate == true and State.IntentionalExit
+and (tick() - State.IntentionalExitTime) < CONFIG.INTENTIONAL_EXIT_TIME then
+return
+end
+
+-- on food seat — ignore
+if rstate == true and IsOnFoodSeat() then return end
+
+if rstate == true then
+RagdollState.Count = RagdollState.Count + 1
+if not RagdollState.Active then
+RagdollState.Active = true
+State.Paused = true
+LiftKart()
+end
+else
+RagdollState.Count = math.max(0, RagdollState.Count - 1)
+if RagdollState.Count == 0 then
+task.delay(CONFIG.RAGDOLL_RESTORE_DELAY, function()
+if RagdollState.Count == 0 and RagdollState.Active then
+RagdollState.Active = false
+DropKart()
+State.Paused = false
+end
+end)
+end
+end
+end)
+end)
+end
+
+-- ============================================================
+-- AUTO EAT LOOP
+-- ============================================================
+local eatLoop = nil
+
+local function StartEatLoop()
+if eatLoop then return end
+eatLoop = task.spawn(function()
+while State.Enabled do
+local stats = Player:FindFirstChild("stats")
+local hunger = stats and stats:FindFirstChild("Hunger")
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+
+if hunger and hum and hum.Health > 0 and hunger.Value < CONFIG.HUNGER_MIN then
+State.Paused = true
+State.IntentionalExit = true
+State.IntentionalExitTime = tick()
+State.EatStatus = "голоден, иду есть"
+
+hum.Sit = false
+local t0 = tick()
+while hum.Sit and tick() - t0 < 1.5 do task.wait(0.05) end
+
+local attempts = 0
+local consecutiveFails = 0
+
+while State.Enabled
+and hunger.Value < CONFIG.HUNGER_MAX
+and attempts < CONFIG.EAT_MAX_ATTEMPTS
+and hum.Health > 0
+do
+attempts = attempts + 1
+State.EatAttempts = attempts
+
+local ok = AutoEat()
+
+if ok then
+consecutiveFails = 0
+State.EatStatus = "Hunger=" .. math.floor(hunger.Value)
+else
+consecutiveFails = consecutiveFails + 1
+State.EatStatus = "retry #" .. attempts .. " (fail " .. consecutiveFails .. ")"
+end
+
+local waitTime = CONFIG.EAT_WAIT_SHORT
+if consecutiveFails > CONFIG.EAT_FAIL_THRESHOLD_LONG then
+waitTime = CONFIG.EAT_WAIT_LONG
+elseif consecutiveFails > CONFIG.EAT_FAIL_THRESHOLD_MED then
+waitTime = CONFIG.EAT_WAIT_MED
+end
+
+task.wait(waitTime + math.random() * 0.2)
+end
+
+State.EatStatus = "наелся (Hunger=" .. math.floor(hunger.Value) .. ")"
+State.IntentionalExit = false
+State.Paused = false
+task.wait(1)
+end
+
+task.wait(2)
+end
+eatLoop = nil
+end)
+end
+
+-- ============================================================
+-- ANTI-FLOOD LOOP
+-- ============================================================
+local floodLoop = nil
+
+local function StartFloodLoop()
+if floodLoop then return end
+floodLoop = task.spawn(function()
+while State.Enabled do
+local ch = Player.Character
+if ch then
+local Float = ch:FindFirstChild("Float")
+if Float then
+pcall(function()
+Float.Disabled = true
+Float:Destroy()
+end)
+end
+end
+task.wait()
+end
+floodLoop = nil
+end)
+end
+
+-- ============================================================
+-- MAIN FARM LOOP
+-- ============================================================
+local farmLoop = nil
+
+local function StartFarmLoop()
+if farmLoop then return end
+farmLoop = task.spawn(function()
+State.RiceFolder = Workspace:FindFirstChild("Rice")
+
+while State.Enabled do
+local Karts = Workspace:FindFirstChild("Karts")
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+
+if not State.Paused then
+if not Karts or not Karts:FindFirstChild(PlayerName) then
+State.KartStatus = "не найден"
+if hum and hum.Health <= 0 then
+local re = ReplicatedStorage:FindFirstChild("RemoteEvent")
+if re then pcall(function() re:FireServer("Respawn") end) end
+else
+local tool = GetTool("FarmKart")
+if tool then
+tool:Activate()
+State.KartStatus = "активирую..."
+else
+State.KartStatus = "нет FarmKart"
+State.Error = "Купи FarmKart вручную в Barbarian Village"
+end
+end
+else
+State.KartStatus = "работает"
+State.Error = nil
+local kart = Karts[PlayerName]
+for _, v in ipairs(kart:GetDescendants()) do
+if v:IsA("BasePart") then
+v.CanCollide = false
+end
+end
+UseKart(kart)
+end
+end
+
+task.wait(CONFIG.CHECK_INTERVAL)
+end
+farmLoop = nil
+end)
+end
+
+-- ============================================================
+-- PUBLIC API
+-- ============================================================
+local function StartFarm()
+if State.Enabled then return end
+State.Enabled = true
+State.Error = nil
+State.RiceCount = 0
+State.LastRice = nil
+State.EatStatus = ""
+State.SessionStart = tick()
+Profit.Sample = {}
+HookRagdoll()
+StartFarmLoop()
+StartEatLoop()
+StartFloodLoop()
+end
+
+local function StopFarm()
+State.Enabled = false
+State.Paused = false
+RagdollState.Count = 0
+RagdollState.Active = false
+DropKart()
+end
+
+local function ToggleFarm()
+if State.Enabled then StopFarm() else StartFarm() end
+end
+
+-- ============================================================
+-- CONFIG PERSISTENCE
+-- ============================================================
+local CFG_FILE = "ricefarm_cfg.json"
+
+local function SaveConfig()
+if not writefile then return false end
+local ok, encoded = pcall(function() return game:GetService("HttpService"):JSONEncode(CONFIG) end)
+if not ok then return false end
+pcall(function() writefile(CFG_FILE, encoded) end)
+return true
+end
+
+local function LoadConfig()
+if not (isfile and readfile) then return false end
+if not isfile(CFG_FILE) then return false end
+local ok, content = pcall(function() return readfile(CFG_FILE) end)
+if not ok then return false end
+local ok2, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(content) end)
+if not ok2 or type(decoded) ~= "table" then return false end
+for k, v in pairs(decoded) do
+if CONFIG[k] ~= nil and type(CONFIG[k]) == type(v) then
+CONFIG[k] = v
+end
+end
+return true
+end
+
+local function ResetConfig()
+for k, v in pairs({
+OFFSET_X = 0, OFFSET_Y = -2, OFFSET_Z = 3,
+STEP_DELAY = 0.15, POST_CUT_WAIT = 0.15, NO_RICE_WAIT = 0.3,
+CHECK_INTERVAL = 2.3, MAIN_LOOP_DELAY = 0.02,
+FOOD_MODE = "auto", HUNGER_MIN = 10, HUNGER_MAX = 90,
+EAT_MAX_ATTEMPTS = 200, EAT_WAIT_SHORT = 0.3,
+EAT_WAIT_MED = 1.0, EAT_WAIT_LONG = 2.0,
+EAT_FAIL_THRESHOLD_MED = 3, EAT_FAIL_THRESHOLD_LONG = 10,
+EAT_TOOL_TIMEOUT = 6.0, EAT_SEAT_TIMEOUT = 1.5,
+INTENTIONAL_EXIT_TIME = 4.0,
+RAGDOLL_SAVE = true, RAGDOLL_LIFT = 100,
+RAGDOLL_RESTORE_DELAY = 1.0, RAGDOLL_RETRY = 0.15,
+RICE_PRICE = 5, PING_FALLBACK = 0.1,
+}) do
+CONFIG[k] = v
+end
+end
+
+local function ApplyPreset(name)
+if name == "fast" then
+CONFIG.STEP_DELAY = 0.05
+CONFIG.POST_CUT_WAIT = 0.05
+CONFIG.MAIN_LOOP_DELAY = 0.01
+CONFIG.CHECK_INTERVAL = 1.5
+CONFIG.EAT_WAIT_SHORT = 0.2
+elseif name == "safe" then
+CONFIG.STEP_DELAY = 0.25
+CONFIG.POST_CUT_WAIT = 0.35
+CONFIG.MAIN_LOOP_DELAY = 0.05
+CONFIG.CHECK_INTERVAL = 2.5
+CONFIG.EAT_WAIT_SHORT = 0.5
+else -- balanced
+CONFIG.STEP_DELAY = 0.15
+CONFIG.POST_CUT_WAIT = 0.15
+CONFIG.MAIN_LOOP_DELAY = 0.02
+CONFIG.CHECK_INTERVAL = 2.3
+CONFIG.EAT_WAIT_SHORT = 0.3
+end
+end
+
+-- ============================================================
+-- GUI
+-- ============================================================
+local oldGui = Player:FindFirstChild("PlayerGui") and Player.PlayerGui:FindFirstChild("RiceFarmGUI")
+if oldGui then oldGui:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RiceFarmGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = Player:WaitForChild("PlayerGui")
+
+local FRAME_W = 480
+local FRAME_H = 500
+local HEADER_H = 96
+local CONTENT_H = FRAME_H - HEADER_H
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, FRAME_W, 0, FRAME_H)
+MainFrame.Position = UDim2.new(0, 20, 0, 80)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local MFCorner = Instance.new("UICorner")
+MFCorner.CornerRadius = UDim.new(0, 10)
+MFCorner.Parent = MainFrame
+
+local MFStroke = Instance.new("UIStroke")
+MFStroke.Color = Color3.fromRGB(55, 55, 65)
+MFStroke.Thickness = 1
+MFStroke.Parent = MainFrame
+
+-- ============================================================
+-- HEADER
+-- ============================================================
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, HEADER_H)
+Header.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+Header.BorderSizePixel = 0
+Header.Parent = MainFrame
+
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 10)
+HeaderCorner.Parent = Header
+
+local function MakeHeaderRow(y, leftText, rightText)
+local row = Instance.new("Frame")
+row.Size = UDim2.new(1, -20, 0, 24)
+row.Position = UDim2.new(0, 10, 0, y)
+row.BackgroundTransparency = 1
+row.Parent = Header
+
+local L = Instance.new("TextButton")
+L.Size = UDim2.new(0.5, -5, 1, 0)
+L.BackgroundTransparency = 1
+L.Text = leftText
+L.TextColor3 = Color3.fromRGB(220, 220, 230)
+L.Font = Enum.Font.GothamBold
+L.TextSize = 15
+L.TextXAlignment = Enum.TextXAlignment.Left
+L.Parent = row
+
+local R = Instance.new("TextButton")
+R.Size = UDim2.new(0.5, -5, 1, 0)
+R.Position = UDim2.new(0.5, 5, 0, 0)
+R.BackgroundTransparency = 1
+R.Text = rightText
+R.TextColor3 = Color3.fromRGB(220, 220, 230)
+R.Font = Enum.Font.GothamBold
+R.TextSize = 15
+R.TextXAlignment = Enum.TextXAlignment.Left
+R.Parent = row
+
+return L, R
+end
+
+local UtilsTab, InfoTab = MakeHeaderRow(6, "[ utils ]", "[ info ]")
+
+-- divider row
+local DivRow = Instance.new("Frame")
+DivRow.Size = UDim2.new(1, -20, 0, 20)
+DivRow.Position = UDim2.new(0, 10, 0, 32)
+DivRow.BackgroundTransparency = 1
+DivRow.Parent = Header
+
+local DivLeft = Instance.new("TextLabel")
+DivLeft.Size = UDim2.new(0.5, -5, 1, 0)
+DivLeft.BackgroundTransparency = 1
+DivLeft.Text = "[ ─────────────── ]"
+DivLeft.TextColor3 = Color3.fromRGB(90, 90, 100)
+DivLeft.Font = Enum.Font.Gotham
+DivLeft.TextSize = 13
+DivLeft.TextXAlignment = Enum.TextXAlignment.Left
+DivLeft.Parent = DivRow
+
+local DivRight = Instance.new("TextLabel")
+DivRight.Size = UDim2.new(0.5, -5, 1, 0)
+DivRight.Position = UDim2.new(0.5, 5, 0, 0)
+DivRight.BackgroundTransparency = 1
+DivRight.Text = "[ ─────────────── ]"
+DivRight.TextColor3 = Color3.fromRGB(90, 90, 100)
+DivRight.Font = Enum.Font.Gotham
+DivRight.TextSize = 13
+DivRight.TextXAlignment = Enum.TextXAlignment.Left
+DivRight.Parent = DivRow
+
+local CfgTab, ProfitTab = MakeHeaderRow(58, "[ cfg ]", "[ `$/h ]")
+
+-- ============================================================
+-- CONTENT CONTAINER
+-- ============================================================
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(1, -20, 0, CONTENT_H - 10)
+Content.Position = UDim2.new(0, 10, 0, HEADER_H + 5)
+Content.BackgroundTransparency = 1
+Content.Parent = MainFrame
+
+-- ============================================================
+-- PAGE: INFO
+-- ============================================================
+local InfoPage = Instance.new("Frame")
+InfoPage.Size = UDim2.new(1, 0, 1, 0)
+InfoPage.BackgroundTransparency = 1
+InfoPage.Visible = true
+InfoPage.Parent = Content
+
+local function MakeInfoLabel(y, h, text, color)
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(1, 0, 0, h)
+lbl.Position = UDim2.new(0, 0, 0, y)
+lbl.BackgroundTransparency = 1
+lbl.Text = text
+lbl.TextColor3 = color or Color3.fromRGB(200, 200, 210)
+lbl.Font = Enum.Font.Gotham
+lbl.TextSize = 12
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+lbl.TextWrapped = true
+lbl.Parent = InfoPage
+return lbl
+end
+
+local InfoLine1 = MakeInfoLabel(0, 20, "рис: 0 · 0.00/сек · 0/мин", Color3.fromRGB(140, 220, 140))
+local InfoLine2 = MakeInfoLabel(24, 20, "$`/h: ~0 · цикл 0.00с", Color3.fromRGB(255, 220, 120))
+local InfoLine3 = MakeInfoLabel(48, 20, "карт: — · еда: —", Color3.fromRGB(180, 180, 200))
+local InfoBreakdown = MakeInfoLabel(76, 100,
+"разбивка цикла:\n" ..
+" step: 0.000\n" ..
+" post: 0.000\n" ..
+" loop: 0.000\n" ..
+" ping: 0.000",
+Color3.fromRGB(150, 150, 165))
+
+-- ============================================================
+-- PAGE: UTILS
+-- ============================================================
+local UtilsPage = Instance.new("Frame")
+UtilsPage.Size = UDim2.new(1, 0, 1, 0)
+UtilsPage.BackgroundTransparency = 1
+UtilsPage.Visible = false
+UtilsPage.Parent = Content
+
+local function MakeButton(parent, x, y, w, h, text, color)
+local b = Instance.new("TextButton")
+b.Size = UDim2.new(0, w, 0, h)
+b.Position = UDim2.new(0, x, 0, y)
+b.BackgroundColor3 = color or Color3.fromRGB(50, 50, 60)
+b.BorderSizePixel = 0
+b.Text = text
+b.TextColor3 = Color3.fromRGB(240, 240, 245)
+b.Font = Enum.Font.GothamBold
+b.TextSize = 12
+b.Parent = parent
+local c = Instance.new("UICorner")
+c.CornerRadius = UDim.new(0, 6)
+c.Parent = b
+return b
+end
+
+local ToggleBtn = MakeButton(UtilsPage, 0, 0, 200, 40, "start", Color3.fromRGB(200, 50, 50))
+
+local function MakeToggleRow(parent, y, label, key)
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(1, -70, 0, 26)
+lbl.Position = UDim2.new(0, 0, 0, y)
+lbl.BackgroundTransparency = 1
+lbl.Text = label
+lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+lbl.Font = Enum.Font.Gotham
+lbl.TextSize = 12
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+lbl.Parent = parent
+
+local t = Instance.new("TextButton")
+t.Size = UDim2.new(0, 60, 0, 22)
+t.Position = UDim2.new(1, -60, 0, y + 2)
+t.BackgroundColor3 = CONFIG[key] and Color3.fromRGB(60, 160, 90) or Color3.fromRGB(60, 60, 70)
+t.BorderSizePixel = 0
+t.Text = CONFIG[key] and "ON" or "OFF"
+t.TextColor3 = Color3.fromRGB(255, 255, 255)
+t.Font = Enum.Font.GothamBold
+t.TextSize = 11
+t.Parent = parent
+local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 4); c.Parent = t
+
+t.MouseButton1Click:Connect(function()
+CONFIG[key] = not CONFIG[key]
+t.BackgroundColor3 = CONFIG[key] and Color3.fromRGB(60, 160, 90) or Color3.fromRGB(60, 60, 70)
+t.Text = CONFIG[key] and "ON" or "OFF"
+if key == "RAGDOLL_SAVE" and not CONFIG.RAGDOLL_SAVE then
+DropKart()
+RagdollState.Active = false
+RagdollState.Count = 0
+end
+end)
+return t
+end
+
+MakeToggleRow(UtilsPage, 52, "ragdoll save", "RAGDOLL_SAVE")
+
+local SaveBtn = MakeButton(UtilsPage, 0, 90, 140, 32, "save cfg", Color3.fromRGB(60, 100, 160))
+local LoadBtn = MakeButton(UtilsPage, 148, 90, 140, 32, "load cfg", Color3.fromRGB(60, 100, 160))
+local ResetBtn = MakeButton(UtilsPage, 296, 90, 140, 32, "reset cfg", Color3.fromRGB(120, 60, 60))
+local HideBtn = MakeButton(UtilsPage, 0, 130, 200, 32, "hide gui (rshift)", Color3.fromRGB(50, 50, 60))
+
+SaveBtn.MouseButton1Click:Connect(function()
+SaveConfig()
+SaveBtn.Text = "saved"
+task.delay(1, function() SaveBtn.Text = "save cfg" end)
+end)
+LoadBtn.MouseButton1Click:Connect(function()
+LoadConfig()
+LoadBtn.Text = "loaded"
+task.delay(1, function() LoadBtn.Text = "load cfg" end)
+end)
+ResetBtn.MouseButton1Click:Connect(function()
+ResetConfig()
+end)
+HideBtn.MouseButton1Click:Connect(function()
+MainFrame.Visible = false
+end)
+ToggleBtn.MouseButton1Click:Connect(function() ToggleFarm() end)
+
+-- ============================================================
+-- PAGE: CFG (SCROLL)
+-- ============================================================
+local CfgPage = Instance.new("ScrollingFrame")
+CfgPage.Size = UDim2.new(1, 0, 1, 0)
+CfgPage.BackgroundTransparency = 1
+CfgPage.BorderSizePixel = 0
+CfgPage.ScrollBarThickness = 4
+CfgPage.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+CfgPage.CanvasSize = UDim2.new(0, 0, 0, 0)
+CfgPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
+CfgPage.Visible = false
+CfgPage.Parent = Content
+
+local CfgLayout = Instance.new("UIListLayout")
+CfgLayout.Padding = UDim.new(0, 4)
+CfgLayout.SortOrder = Enum.SortOrder.LayoutOrder
+CfgLayout.Parent = CfgPage
+
+local function AddSection(title)
+local s = Instance.new("TextLabel")
+s.Size = UDim2.new(1, 0, 0, 22)
+s.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+s.BorderSizePixel = 0
+s.Text = " " .. title
+s.TextColor3 = Color3.fromRGB(150, 200, 255)
+s.Font = Enum.Font.GothamBold
+s.TextSize = 12
+s.TextXAlignment = Enum.TextXAlignment.Left
+s.Parent = CfgPage
+local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 4); c.Parent = s
+return s
+end
+
+local function AddStepper(label, key, step, min, max, decimals)
+local holder = Instance.new("Frame")
+holder.Size = UDim2.new(1, 0, 0, 26)
+holder.BackgroundTransparency = 1
+holder.Parent = CfgPage
+
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(0, 220, 1, 0)
+lbl.BackgroundTransparency = 1
+lbl.Text = label
+lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+lbl.Font = Enum.Font.Gotham
+lbl.TextSize = 12
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+lbl.Parent = holder
+
+local box = Instance.new("TextBox")
+box.Size = UDim2.new(0, 70, 1, 0)
+box.Position = UDim2.new(1, -170, 0, 0)
+box.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+box.BorderSizePixel = 0
+box.Text = tostring(CONFIG[key])
+box.TextColor3 = Color3.fromRGB(240, 240, 245)
+box.Font = Enum.Font.Gotham
+box.TextSize = 12
+box.Parent = holder
+local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 4); bc.Parent = box
+
+local minus = Instance.new("TextButton")
+minus.Size = UDim2.new(0, 22, 1, 0)
+minus.Position = UDim2.new(1, -95, 0, 0)
+minus.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+minus.BorderSizePixel = 0
+minus.Text = "−"
+minus.TextColor3 = Color3.fromRGB(255, 255, 255)
+minus.Font = Enum.Font.GothamBold
+minus.TextSize = 14
+minus.Parent = holder
+local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(0, 4); mc.Parent = minus
+
+local plus = Instance.new("TextButton")
+plus.Size = UDim2.new(0, 22, 1, 0)
+plus.Position = UDim2.new(1, -70, 0, 0)
+plus.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+plus.BorderSizePixel = 0
+plus.Text = "+"
+plus.TextColor3 = Color3.fromRGB(255, 255, 255)
+plus.Font = Enum.Font.GothamBold
+plus.TextSize = 14
+plus.Parent = holder
+local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(0, 4); pc.Parent = plus
+
+local function clamp(v)
+if v < min then v = min end
+if v > max then v = max end
+return v
+end
+
+local function apply(v)
+v = clamp(v)
+if decimals then
+local mult = 10 ^ decimals
+v = math.round(v * mult) / mult
+end
+CONFIG[key] = v
+box.Text = tostring(v)
+end
+
+minus.MouseButton1Click:Connect(function() apply(CONFIG[key] - step) end)
+plus.MouseButton1Click:Connect(function() apply(CONFIG[key] + step) end)
+box.FocusLost:Connect(function()
+local n = tonumber(box.Text)
+if n then apply(n) else box.Text = tostring(CONFIG[key]) end
+end)
+
+return { set = apply }
+end
+
+local function AddChooser(label, key, options)
+local holder = Instance.new("Frame")
+holder.Size = UDim2.new(1, 0, 0, 26)
+holder.BackgroundTransparency = 1
+holder.Parent = CfgPage
+
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(0, 220, 1, 0)
+lbl.BackgroundTransparency = 1
+lbl.Text = label
+lbl.TextColor3 = Color3.fromRGB(200, 200, 210)
+lbl.Font = Enum.Font.Gotham
+lbl.TextSize = 12
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+lbl.Parent = holder
+
+local btnW = 80
+for i, opt in ipairs(options) do
+local b = Instance.new("TextButton")
+b.Size = UDim2.new(0, btnW, 1, 0)
+b.Position = UDim2.new(1, -(#options - i + 1) * (btnW + 4), 0, 0)
+b.BackgroundColor3 = CONFIG[key] == opt and Color3.fromRGB(60, 130, 90) or Color3.fromRGB(50, 50, 60)
+b.BorderSizePixel = 0
+b.Text = opt
+b.TextColor3 = Color3.fromRGB(255, 255, 255)
+b.Font = Enum.Font.Gotham
+b.TextSize = 11
+b.Parent = holder
+local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 4); c.Parent = b
+
+b.MouseButton1Click:Connect(function()
+CONFIG[key] = opt
+for _, other in ipairs(holder:GetChildren()) do
+if other:IsA("TextButton") then
+other.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+end
+end
+b.BackgroundColor3 = Color3.fromRGB(60, 130, 90)
+end)
+end
+end
+
+-- Sections
+AddSection("OFFSETS")
+AddStepper("offset X", "OFFSET_X", 0.5, -20, 20, 2)
+AddStepper("offset Y", "OFFSET_Y", 0.5, -20, 20, 2)
+AddStepper("offset Z", "OFFSET_Z", 0.5, -20, 20, 2)
+
+AddSection("TIMINGS (seconds)")
+AddStepper("step delay", "STEP_DELAY", 0.01, 0.01, 0.5, 3)
+AddStepper("post cut wait", "POST_CUT_WAIT", 0.01, 0, 1, 3)
+AddStepper("no rice wait", "NO_RICE_WAIT", 0.05, 0.05, 2, 3)
+AddStepper("check interval", "CHECK_INTERVAL", 0.1, 0.5, 10, 2)
+AddStepper("main loop delay", "MAIN_LOOP_DELAY", 0.01, 0.005, 0.2, 3)
+
+AddSection("EAT")
+AddChooser("food mode", "FOOD_MODE", {"auto", "rice", "popcorn"})
+AddStepper("hunger min", "HUNGER_MIN", 1, 1, 99, 0)
+AddStepper("hunger max", "HUNGER_MAX", 1, 1, 100, 0)
+AddStepper("eat max attempts", "EAT_MAX_ATTEMPTS", 10, 10, 1000, 0)
+AddStepper("eat wait short", "EAT_WAIT_SHORT", 0.05, 0.05, 3, 3)
+AddStepper("eat wait med", "EAT_WAIT_MED", 0.1, 0.1, 5, 3)
+AddStepper("eat wait long", "EAT_WAIT_LONG", 0.1, 0.1, 10, 3)
+AddStepper("fail threshold med", "EAT_FAIL_THRESHOLD_MED", 1, 1, 50, 0)
+AddStepper("fail threshold long", "EAT_FAIL_THRESHOLD_LONG", 1, 1, 100, 0)
+AddStepper("eat tool timeout", "EAT_TOOL_TIMEOUT", 0.5, 1, 15, 1)
+AddStepper("eat seat timeout", "EAT_SEAT_TIMEOUT", 0.1, 0.3, 5, 2)
+AddStepper("intentional exit time", "INTENTIONAL_EXIT_TIME", 0.5, 1, 15, 1)
+
+AddSection("RAGDOLL SAVE")
+AddStepper("ragdoll lift (studs)", "RAGDOLL_LIFT", 5, 10, 500, 0)
+AddStepper("restore delay", "RAGDOLL_RESTORE_DELAY", 0.1, 0, 5, 2)
+AddStepper("retry interval", "RAGDOLL_RETRY", 0.05, 0.05, 1, 3)
+
+AddSection("PROFIT")
+AddStepper("rice price (`$)", "RICE_PRICE", 1, 1, 1000, 0)
+AddStepper("ping fallback", "PING_FALLBACK", 0.01, 0.01, 1, 3)
+
+AddSection("PRESETS")
+local PresetHolder = Instance.new("Frame")
+PresetHolder.Size = UDim2.new(1, 0, 0, 32)
+PresetHolder.BackgroundTransparency = 1
+PresetHolder.Parent = CfgPage
+
+local FastBtn = MakeButton(PresetHolder, 0, 0, 100, 28, "fast", Color3.fromRGB(150, 60, 60))
+local SafeBtn = MakeButton(PresetHolder, 108, 0, 100, 28, "safe", Color3.fromRGB(60, 130, 90))
+local BalBtn = MakeButton(PresetHolder, 216, 0, 100, 28, "balanced", Color3.fromRGB(60, 90, 150))
+
+-- ============================================================
+-- PAGE: PROFIT DETAIL
+-- ============================================================
+local ProfitPage = Instance.new("Frame")
+ProfitPage.Size = UDim2.new(1, 0, 1, 0)
+ProfitPage.BackgroundTransparency = 1
+ProfitPage.Visible = false
+ProfitPage.Parent = Content
+
+local function MakeProfitLabel(y, h, text, color)
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.new(1, 0, 0, h)
+lbl.Position = UDim2.new(0, 0, 0, y)
+lbl.BackgroundTransparency = 1
+lbl.Text = text
+lbl.TextColor3 = color or Color3.fromRGB(200, 200, 210)
+lbl.Font = Enum.Font.Gotham
+lbl.TextSize = 12
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+lbl.TextWrapped = true
+lbl.Parent = ProfitPage
+return lbl
+end
+
+local ProfitDetailed = MakeProfitLabel(0, 300, "", Color3.fromRGB(200, 200, 220))
+
+-- ============================================================
+-- TAB SWITCHING
+-- ============================================================
+local activeTab = "info"
+
+local function SetTab(tab)
+activeTab = tab
+InfoPage.Visible = tab == "info"
+UtilsPage.Visible = tab == "utils"
+CfgPage.Visible = tab == "cfg"
+ProfitPage.Visible = tab == "profit"
+
+local active = Color3.fromRGB(255, 255, 255)
+local idle = Color3.fromRGB(140, 140, 150)
+
+UtilsTab.TextColor3 = tab == "utils" and active or idle
+InfoTab.TextColor3 = tab == "info" and active or idle
+CfgTab.TextColor3 = tab == "cfg" and active or idle
+ProfitTab.TextColor3 = tab == "profit" and active or idle
+end
+
+UtilsTab.MouseButton1Click:Connect(function() SetTab("utils") end)
+InfoTab.MouseButton1Click:Connect(function() SetTab("info") end)
+CfgTab.MouseButton1Click:Connect(function() SetTab("cfg") end)
+ProfitTab.MouseButton1Click:Connect(function() SetTab("profit") end)
+
+-- ============================================================
+-- UPDATE GUI LOOP
+-- ============================================================
+local function UpdateGUI()
+if State.Enabled then
+ToggleBtn.Text = "stop"
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 90)
+else
+ToggleBtn.Text = "start"
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+end
+
+local r = GetRates()
+local cycleParts = string.format(
+"step: %.3f\npost: %.3f\nloop: %.3f\nping: %.3f\n─────\ncycle: %.3f",
+CONFIG.STEP_DELAY, CONFIG.POST_CUT_WAIT, CONFIG.MAIN_LOOP_DELAY,
+r.ping, r.cycle
+)
+
+InfoLine1.Text = string.format("рис: %d · %.2f/сек · %.1f/мин",
+State.RiceCount, r.ratePerSec, r.ratePerMin)
+InfoLine2.Text = string.format("$`/h: ~%d · цикл %.3fс",
+math.floor(r.perHour), r.cycle)
+InfoLine3.Text = string.format("карт: %s · еда: %s",
+State.KartStatus, State.EatStatus ~= "" and State.EatStatus or "—")
+InfoBreakdown.Text = "разбивка цикла:\n" .. cycleParts
+
+ProfitDetailed.Text = string.format(
+"ТЕКУЩИЕ ПОКАЗАТЕЛИ\n" ..
+"───────────────────────\n" ..
+"цена риса: %d $\n" .. "ping: %.3f с\n" .. "цикл (nominal): %.3f с\n\n" .. "step delay: %.3f с\n" .. "post cut wait: %.3f с\n" .. "main loop: %.3f с\n" .. "───────────────────────\n" .. "РИС\n" .. " в секунду: %.2f\n" .. " в минуту: %.1f\n" .. " в час: %d\n\n" .. "ДЕНЬГИ\n" .. " в минуту: %d $\n" ..
+" в час: %d `$\n" ..
+"───────────────────────\n" ..
+"СЕССИЯ\n" ..
+" собрано: %d\n" ..
+" время: %.1f мин\n" ..
+" темп: %d $/h",
+CONFIG.RICE_PRICE, r.ping, r.cycle,
+CONFIG.STEP_DELAY, CONFIG.POST_CUT_WAIT, CONFIG.MAIN_LOOP_DELAY,
+r.ratePerSec, r.ratePerMin, math.floor(r.ratePerSec * 3600),
+math.floor(r.ratePerMin * CONFIG.RICE_PRICE),
+math.floor(r.perHour),
+State.RiceCount,
+(tick() - State.SessionStart) / 60,
+(tick() - State.SessionStart) > 0
+and math.floor(State.RiceCount * CONFIG.RICE_PRICE * 3600 / (tick() - State.SessionStart))
+or 0
+)
+end
+
+task.spawn(function()
+while true do
+pcall(UpdateGUI)
+task.wait(0.5)
+end
+end)
+
+-- ============================================================
+-- INPUT
+-- ============================================================
+UserInputService.InputBegan:Connect(function(input, gp)
+if gp then return end
+if input.KeyCode == Enum.KeyCode.RightShift then
+MainFrame.Visible = not MainFrame.Visible
+end
+end)
+
+-- ============================================================
+-- PRESET HOOKS
+-- ============================================================
+FastBtn.MouseButton1Click:Connect(function() ApplyPreset("fast") end)
+SafeBtn.MouseButton1Click:Connect(function() ApplyPreset("safe") end)
+BalBtn.MouseButton1Click:Connect(function() ApplyPreset("balanced") end)
+
+-- ============================================================
+-- INIT
+-- ============================================================
+LoadConfig()
+SetTab("info")
+
+getgenv().RiceFarm = {
+Start = StartFarm,
+Stop = StopFarm,
+Toggle = ToggleFarm,
+Status = function() return State end,
+Config = CONFIG,
+Save = SaveConfig,
+Load = LoadConfig,
+Reset = ResetConfig,
+}
+
+-- silent load
